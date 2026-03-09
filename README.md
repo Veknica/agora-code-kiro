@@ -1,148 +1,52 @@
-## Commands
+# agora-code
 
-agora-code provides four main commands to discover, serve, monitor, and configure API integrations.
+**Turn any codebase into a memory-aware API agent.**
+
+agora-code is a two-part tool:
+
+1. **Route Discovery** — scans Python, JavaScript, OpenAPI specs, or any codebase and extracts every API endpoint automatically.
+2. **Session Memory** — remembers everything about your API testing sessions (what you tried, what you learned, what broke) and restores that context automatically when you come back.
+
+This is not just a route scanner. It's a context manager that happens to know about your APIs. The AI assistant you're working with gets rich, compressed context about your session instead of starting fresh every time.
 
 ---
 
-### `scan` - Discover API Routes
-
-Automatically discover all API endpoints in your codebase or from a remote URL.
-
-**What it does:**
-- Scans Python codebases (FastAPI, Flask, Django) for API routes
-- Extracts HTTP methods, paths, parameters, and descriptions
-- Can use OpenAPI/Swagger specs if available
-- Optionally uses LLM for complex codebases (Node.js, Go, etc.)
-- Outputs results as table, JSON, or MCP tool definitions
-
-**Usage:**
+## Installation
 
 ```bash
-# Basic scan - shows table of all routes
-agora-code scan ./my-api
-
-# Scan and save to JSON file
-agora-code scan ./my-api --output routes.json
-
-# Scan remote API via URL
-agora-code scan https://api.example.com
-
-# Output as MCP tool definitions
-agora-code scan ./my-api --format mcp
-
-# Use LLM for advanced extraction (requires OpenAI/Gemini API key)
-agora-code scan ./my-api --use-llm --llm-provider openai
+pip install agora-code
 ```
 
-**Options:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--output, -o FILE` | Save discovered routes to JSON file | None |
-| `--format FORMAT` | Output format: `table`, `json`, or `mcp` | `table` |
-| `--use-llm` | Enable LLM-based extraction for non-Python codebases | `false` |
-| `--llm-provider PROVIDER` | LLM provider: `openai` or `gemini` | `openai` |
-| `--enterprise` | Enable enterprise edition features | `false` |
-
-**Examples:**
-
+For semantic search (enables recall by meaning, not just keyword):
 ```bash
-# Scan FastAPI app and save to file
-agora-code scan ./fastapi-app --output api-routes.json
+pip install agora-code[memory]      # sqlite-vec + OpenAI embeddings
+```
 
-# Scan with pretty table output
-agora-code scan ./flask-app --format table
-
-# Scan Node.js API using LLM
-agora-code scan ./express-app --use-llm --llm-provider openai
-
-# Scan and get MCP-compatible tool definitions
-agora-code scan ./my-api --format mcp
+For LLM-based route extraction (non-Python/non-OpenAPI projects):
+```bash
+pip install agora-code[llm]         # OpenAI extract support
 ```
 
 ---
 
-### `serve` - Start MCP Server
+## Quick Start
 
-Start a Model Context Protocol (MCP) server that exposes your API as tools for AI assistants like Claude or Cursor.
-
-**What it does:**
-- Scans your codebase for API routes
-- Creates an MCP server with tools for each endpoint
-- Automatically makes HTTP requests to your live API
-- Optionally tracks API usage and patterns with memory layer
-- Handles authentication (Bearer, API Key, Basic)
-- Works with Claude Desktop, Cursor, and other MCP clients
-
-**Usage:**
+### 1. Scan your API
 
 ```bash
-# Basic server pointing to local API
+agora-code scan ./my-fastapi-app
+agora-code scan https://api.example.com          # remote OpenAPI URL
+agora-code scan ./my-node-app --use-llm          # LLM extraction for non-Python
+```
+
+### 2. Serve as an MCP tool (Claude / Cline)
+
+```bash
 agora-code serve ./my-api --url http://localhost:8000
-
-# Server with Bearer token authentication
-agora-code serve ./my-api --url https://api.example.com --auth-token sk_live_abc123
-
-# Server without memory layer (faster startup)
-agora-code serve ./my-api --url http://localhost:8000 --no-memory
-
-# Server with custom auth type
-agora-code serve ./my-api --url https://api.example.com --auth-type api-key --auth-token mykey
 ```
 
-**Options:**
+Add to Claude Desktop or Cline config:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--url, -u URL` | **Required.** Base URL of your live API | None |
-| `--auth-token TOKEN` | Authentication token (or set `AGORA_AUTH_TOKEN` env var) | None |
-| `--auth-type TYPE` | Auth type: `bearer`, `api-key`, `basic`, or `none` | `bearer` |
-| `--memory / --no-memory` | Enable/disable API call tracking and pattern detection | `true` |
-| `--db-path PATH` | SQLite database path for memory storage | `./agora_agent_memory.db` |
-| `--use-llm` | Use LLM for route extraction | `false` |
-| `--llm-provider PROVIDER` | LLM provider: `openai` or `gemini` | `openai` |
-| `--enterprise` | Enable enterprise edition features | `false` |
-
-**Environment Variables:**
-
-- `AGORA_AUTH_TOKEN` - Authentication token (alternative to `--auth-token`)
-- `OPENAI_API_KEY` - Required if using `--use-llm` with OpenAI
-- `GEMINI_API_KEY` - Required if using `--use-llm` with Gemini
-
-**Examples:**
-
-```bash
-# Production API with authentication
-agora-code serve ./my-api \
-  --url https://api.production.com \
-  --auth-token sk_prod_xyz789
-
-# Local development without memory
-agora-code serve ./my-api \
-  --url http://localhost:3000 \
-  --no-memory
-
-# Custom database location
-agora-code serve ./my-api \
-  --url http://localhost:8000 \
-  --db-path ~/agora-data/my-api.db
-
-# API Key authentication
-agora-code serve ./my-api \
-  --url https://api.example.com \
-  --auth-type api-key \
-  --auth-token my_secret_key
-
-# Using environment variable for token
-export AGORA_AUTH_TOKEN=sk_live_abc123
-agora-code serve ./my-api --url https://api.example.com
-```
-
-**Configuration for MCP Clients:**
-
-Once running, configure your MCP client to connect to agora-code:
-
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
@@ -154,365 +58,359 @@ Once running, configure your MCP client to connect to agora-code:
 }
 ```
 
-**Cursor** (`.cursor/mcp.json`):
+Claude can now call your API directly as tools.
+
+### 3. Save your session
+
+```bash
+agora-code checkpoint --goal "Debug POST /users email failures"
+```
+
+Next time you start the server, Claude instantly sees where you left off.
+
+---
+
+## How Route Discovery Works
+
+agora-code uses a 4-tier extraction pipeline, trying each in order:
+
+| Tier | Method | When it runs |
+|---|---|---|
+| 1 | OpenAPI / Swagger spec parsing | Always (if spec file or URL found) |
+| 2 | Python AST analysis | FastAPI, Flask, Django |
+| 3 | LLM extraction (opt-in) | `--use-llm` flag — any language |
+| 4 | Regex fallback | Catches JS/TS `app.get`, `router.post`, etc. |
+
+**Output** is a `RouteCatalog` — a structured list of routes with method, path, params (name, type, location, required), and description.
+
+---
+
+## How Session Memory Works
+
+The memory system has two storage layers:
+
+### Active Session (`.agora-code/session.json`)
+
+The current session is a **JSON file** in your project directory. Human-readable, gitignored, editable by hand. No database, no YAML.
+
 ```json
 {
-  "mcpServers": {
-    "my-api": {
-      "command": "agora-code",
-      "args": ["serve", "./my-api", "--url", "http://localhost:8000"],
-      "env": {
-        "AGORA_AUTH_TOKEN": "your-token-here"
-      }
+  "session_id": "2026-03-08-debug-post-users",
+  "goal": "Fix 422 errors on POST /users",
+  "hypothesis": "Email validation middleware too strict",
+  "current_action": "Testing + symbol in email addresses",
+  "endpoints_tested": [
+    {
+      "method": "POST", "path": "/users",
+      "attempts": 8, "successes": 3, "failures": 5,
+      "last_error": "422 Unprocessable Entity",
+      "working_parameters": {"email": "user@example.com"},
+      "failing_parameters": [{"email": "user+tag@example.com"}]
     }
-  }
+  ],
+  "discoveries": [
+    {
+      "finding": "API rejects + symbol in emails",
+      "confidence": "confirmed",
+      "evidence": "422 on user+tag@example.com, 200 on user@example.com"
+    }
+  ],
+  "next_steps": ["Check email validation middleware", "Try URL-encoding the +"],
+  "blockers": []
 }
 ```
 
----
+### Learnings Database (`~/.agora-code/memory.db`)
 
-### `stats` - View API Usage Statistics
+Completed sessions and stored learnings live in a local SQLite database. Searchable by keyword or meaning.
 
-Display API call statistics, success rates, latency, and detected usage patterns from the memory layer.
-
-**What it does:**
-- Shows total calls per endpoint
-- Calculates success rate (2xx responses)
-- Reports average latency
-- Detects usage patterns (frequent paths, error spikes, etc.)
-- Analyzes historical data within a time window
-
-**Requirements:**
-- Memory layer must be enabled (default)
-- Requires: `pip install agora-code[memory]`
-- Needs prior API usage tracked via `serve` command
-
-**Usage:**
-
-```bash
-# Show stats for default time window (24 hours)
-agora-code stats ./my-api
-
-# Show stats for last 48 hours
-agora-code stats ./my-api --window 48
-
-# Use custom database location
-agora-code stats ./my-api --db-path ~/agora-data/my-api.db
-
-# Show stats for last week
-agora-code stats ./my-api --window 168
-```
-
-**Options:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--db-path PATH` | SQLite database path (must match `serve` command) | `./agora_agent_memory.db` |
-| `--window HOURS` | Time window in hours for pattern detection | `24` |
-
-**Example Output:**
-
-```
-📊 API Stats — ./my-api
-
-  GET    /users/{user_id}                          142 calls   98% ok  45ms
-  POST   /users                                      23 calls  100% ok  78ms
-  GET    /products                                  456 calls   95% ok  32ms
-  DELETE /users/{user_id}                            8 calls   87% ok  120ms
-
-🔍 Patterns detected:
-
-  • High error rate on DELETE /users/{user_id} (13% failures)
-  • GET /products called frequently between 9am-5pm
-  • POST /users average latency increased 2x in last 6 hours
-  • /api/items endpoints not called in last 24 hours
-```
-
-**Examples:**
-
-```bash
-# Check today's API usage
-agora-code stats ./my-api
-
-# Analyze last 3 days
-agora-code stats ./my-api --window 72
-
-# Custom database from different location
-agora-code stats ./my-api --db-path /var/lib/agora/production.db
-```
+- **FTS5 / BM25** keyword search — always works, zero extra dependencies
+- **Cosine similarity** semantic search — add `pip install sqlite-vec` + an API key
 
 ---
 
-### `auth` - Configure Authentication
+## Embeddings & Search
 
-Interactively configure or set authentication for API calls. Saves credentials to `.agora-code/auth.json`.
+Embeddings determine how well `agora-code recall` matches by meaning rather than exact words.
 
-**What it does:**
-- Creates authentication configuration for your API
-- Supports multiple auth types (Bearer, API Key, Basic, None)
-- Saves encrypted credentials locally
-- Used automatically by `serve` command
+**Provider priority (auto-detected):**
 
-**Usage:**
-
-```bash
-# Interactive setup (prompts for auth type and token)
-agora-code auth ./my-api
-
-# Non-interactive with Bearer token
-agora-code auth ./my-api --type bearer --token sk_live_abc123
-
-# API Key authentication
-agora-code auth ./my-api --type api-key --token my_secret_key
-
-# Basic authentication (will prompt for password)
-agora-code auth ./my-api --type basic --token username
-
-# Disable authentication
-agora-code auth ./my-api --type none
+```
+OPENAI_API_KEY set?   →  text-embedding-3-small  (1536 dims, ~$0.00002/call)
+GEMINI_API_KEY set?   →  gemini-embedding-001    (768 dims, free tier)
+Neither set?          →  FTS5/BM25 keyword search only  (still useful)
 ```
 
-**Options:**
-
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--type TYPE` | Auth type: `bearer`, `api-key`, `basic`, or `none` | Interactive prompt |
-| `--token TOKEN` | Token or credential value (skips interactive prompt) | Interactive prompt |
-
-**Auth Types:**
-
-| Type | Description | Example |
-|------|-------------|---------|
-| `bearer` | Bearer token in Authorization header | `Authorization: Bearer sk_live_abc123` |
-| `api-key` | API key in custom header or query param | `X-API-Key: my_secret_key` |
-| `basic` | HTTP Basic authentication | `Authorization: Basic base64(user:pass)` |
-| `none` | No authentication | - |
-
-**Examples:**
-
-```bash
-# Interactive setup - prompts for details
-agora-code auth ./my-api
-
-# Quick Bearer token setup
-agora-code auth ./my-api --type bearer --token sk_live_xyz789
-
-# Remove authentication
-agora-code auth ./my-api --type none
-
-# API Key for production API
-agora-code auth ./production-api --type api-key --token prod_key_456
-```
-
-**Security Notes:**
-
- **Important:** The auth configuration is saved to `.agora-code/auth.json`
-
-- **Always add to `.gitignore`:**
-  ```bash
-  echo ".agora-code/auth.json" >> .gitignore
-  ```
-- Tokens are stored in plaintext - protect this file
-- Consider using environment variables for production:
-  ```bash
-  export AGORA_AUTH_TOKEN=sk_live_abc123
-  agora-code serve ./my-api --url https://api.example.com
-  ```
+No API key needed to use agora-code. You just won't get semantic recall — keyword search works fine.
 
 ---
 
-## Common Workflows
+## Context Compression
 
-### Workflow 1: Local Development
+This is the core of the context manager. Instead of dumping thousands of tokens of JSON into Claude's context on every session start, agora-code compresses the session to the highest-detail level that fits your **token budget**.
+
+| Level | What's included | Approximate tokens |
+|---|---|---|
+| **index** | Goal + endpoint list | ~50 |
+| **summary** | + hypothesis + discoveries + next steps | ~200 |
+| **detail** | + all attempts, decisions, blockers per endpoint | ~500 |
+| **full** | Raw JSON (no compression) | 3,000+ |
+
+The auto-picker tries `detail` → `summary` → `index` until it fits the budget (default: 2,000 tokens). The restoration banner Claude sees on startup is typically **~120 tokens** instead of 3,000+.
+
+---
+
+## Session Commands
+
+### `agora-code checkpoint`
+Save the current session state.
 
 ```bash
-# 1. Scan your local API
-agora-code scan ./my-fastapi-app
+agora-code checkpoint --goal "Debug POST /users"
+agora-code checkpoint --hypothesis "Email validation too strict"
+agora-code checkpoint --action "Testing + in email"
+agora-code checkpoint --next "Try URL encoding" --next "Check middleware"
+agora-code checkpoint --blocker "No access to middleware source"
+```
 
-# 2. Start local API server (separate terminal)
-uvicorn main:app --reload --port 8000
+All flags are optional — run with no flags to just update `last_active` timestamp.
 
-# 3. Start agora-code MCP server
-agora-code serve ./my-fastapi-app --url http://localhost:8000 --no-memory
+---
 
-# 4. Connect from Claude Desktop or Cursor and start using!
+### `agora-code status`
+Show the current session in detail.
+
+```bash
+agora-code status
+```
+
+```
+════════════════════════════════════════════════════════════
+🗂  SESSION: 2026-03-08-debug-post-users
+════════════════════════════════════════════════════════════
+GOAL: Debug POST /users email validation failures
+HYPOTHESIS: Email validation middleware too strict
+WHAT YOU DISCOVERED:
+  ✓ API rejects + symbol in emails
+  ~ Rate limit may be 100 req/min
+NEXT STEPS:
+  → Try URL encoding +
+  → Check middleware config
+ENDPOINTS:
+  • POST /users  (3/8 ok)
+
+🧠 Memory: 4 sessions, 12 learnings, 47 API calls logged  [vector search: off]
 ```
 
 ---
 
-### Workflow 2: Production API with Authentication
+### `agora-code complete`
+Archive the current session and store it in the learnings DB.
 
 ```bash
-# 1. Configure authentication
-agora-code auth ./my-api --type bearer --token sk_prod_xyz
+agora-code complete --summary "Found that POST /users rejects RFC-valid emails with + symbol"
+agora-code complete --outcome partial
+agora-code complete --outcome abandoned
+```
 
-# 2. Scan production API
-agora-code scan ./my-api --output prod-routes.json
+Outcomes: `success` (default) | `partial` | `abandoned`
 
-# 3. Start MCP server with memory enabled
-agora-code serve ./my-api --url https://api.production.com
+---
 
-# 4. Monitor usage over time
-agora-code stats ./my-api --window 168  # Last 7 days
+### `agora-code restore`
+Load a past session as the active session.
+
+```bash
+agora-code restore                                    # list recent sessions
+agora-code restore 2026-03-08-debug-post-users        # restore specific session
 ```
 
 ---
 
-### Workflow 3: Exploring Third-Party APIs
+### `agora-code learn`
+Store a permanent finding about an API. Persists in `~/.agora-code/memory.db` forever.
 
 ```bash
-# 1. Create stub definitions for third-party API
-mkdir github-api && cd github-api
-cat > routes.py << EOF
-from fastapi import FastAPI
-app = FastAPI()
+agora-code learn "POST /users rejects + in email addresses"
+agora-code learn "Rate limit is 100 req/min on /data endpoints" \
+    --endpoint "GET /data" \
+    --api "https://api.example.com" \
+    --tags "rate-limit,data" \
+    --confidence confirmed
+agora-code learn "Auth token expires after 15 minutes (not 1 hour as documented)" \
+    --confidence confirmed \
+    --evidence "Got 401 after 15m despite docs saying 1h"
+```
 
-@app.get("/users/{username}")
-def get_user(username: str): pass
+Confidence levels: `confirmed` | `likely` | `hypothesis`
 
-@app.get("/repos/{owner}/{repo}")
-def get_repo(owner: str, repo: str): pass
-EOF
+---
 
-# 2. Serve with real GitHub API URL
-agora-code serve . --url https://api.github.com
+### `agora-code recall`
+Search your learnings knowledge base.
 
-# 3. Use in Claude/Cursor to explore GitHub API
+```bash
+agora-code recall "email validation"       # finds email-related learnings
+agora-code recall "rate limit" --limit 10
+agora-code recall "auth expires"           # semantic: finds "token expiry" even without exact words
+```
+
+If `OPENAI_API_KEY` is set, search is semantic (finds conceptually related results).
+Otherwise, FTS5 keyword search is used.
+
+---
+
+## Auto-Context Injection (MCP Server)
+
+When Claude starts the MCP server via `agora-code serve`, it:
+
+1. Checks `.agora-code/session.json` — is it < 24 hours old?
+2. If yes, compresses the session to fit the token budget
+3. Emits it as a `notifications/message` over the MCP protocol **before the main loop**
+
+Claude sees the restoration banner **immediately** without any user prompt.
+
+Every API call made through a tool:
+- Gets logged to `~/.agora-code/memory.db` with method, path, params, status, latency
+- If the same parameter combo fails 3+ times, a `💡 PATTERN` hint appears in the tool response
+
+---
+
+## Python API
+
+```python
+import asyncio
+from agora_code import scan, MCPServer
+from agora_code.session import new_session, save_session, load_session_if_recent
+from agora_code.tldr import compress_session, auto_compress_session
+from agora_code.vector_store import get_store
+from agora_code.embeddings import get_embedding
+
+# Scan
+catalog = asyncio.run(scan("./my-api"))
+
+# Serve as MCP
+server = MCPServer(catalog, base_url="http://localhost:8000")
+asyncio.run(server.serve())
+
+# Session
+session = new_session(goal="Debug POST /users")
+save_session(session)
+
+# Compress for Claude context
+summary = compress_session(session, level="summary")        # ~200 tokens
+banner = auto_compress_session(session, token_budget=500)   # fits budget
+
+# Learnings
+store = get_store()
+embedding = get_embedding("POST /users rejects + in emails")
+store.store_learning("POST /users rejects + in emails", embedding=embedding, tags=["email"])
+
+# Recall
+results = store.search_learnings_keyword("email validation")
 ```
 
 ---
 
-### Workflow 4: API Documentation Generation
+## Project Structure
 
-```bash
-# 1. Scan API and export as JSON
-agora-code scan ./my-api --output routes.json --format mcp
-
-# 2. Use routes.json to generate OpenAPI spec
-# 3. Generate client SDKs from OpenAPI spec
-# 4. Auto-generate API documentation
+```
+agora-code/
+├── agora_code/
+│   ├── __init__.py           # Public API: scan, MCPServer, APICallNode
+│   ├── scanner.py            # 4-tier extraction pipeline orchestrator
+│   ├── models.py             # Route, Param, RouteCatalog dataclasses
+│   ├── agent.py              # MCPServer (JSON-RPC 2.0 stdio), APICallNode
+│   ├── cli.py                # All CLI commands (click)
+│   ├── tldr.py               # Context compression: routes + sessions
+│   ├── session.py            # JSON session lifecycle manager
+│   ├── vector_store.py       # SQLite + sqlite-vec + FTS5 storage
+│   ├── embeddings.py         # OpenAI / Gemini / keyword auto-select
+│   ├── memory_layer.py       # agora-mem integration (optional)
+│   └── extractors/
+│       ├── openapi.py        # Tier 1: OpenAPI/Swagger spec parser
+│       ├── ast_parser.py     # Tier 2: Python AST (FastAPI, Flask, Django)
+│       ├── llm.py            # Tier 3: LLM-based extraction (opt-in)
+│       └── regex.py          # Tier 4: Regex fallback (JS/TS/any)
+├── tests/
+│   ├── test_extractors_ast.py
+│   ├── test_extractors_openapi.py
+│   ├── test_integration.py
+│   ├── test_mcp_server.py
+│   └── test_memory.py
+├── .agora-code/              # Project-local (gitignored)
+│   └── session.json          # Active session state
+│  ~/.agora-code/             # Global (persists across projects)
+│   └── memory.db             # Learnings + API call history
+└── pyproject.toml
 ```
 
 ---
 
-## Advanced Usage
+## Environment Variables
 
-### Memory and Pattern Detection
-
-Enable memory to track API usage patterns:
-
-```bash
-# Serve with memory enabled (default)
-agora-code serve ./my-api --url http://localhost:8000
-
-# Make API calls through Claude/Cursor...
-
-# View statistics
-agora-code stats ./my-api
-
-# View patterns over last 3 days
-agora-code stats ./my-api --window 72
-```
-
-**Memory tracks:**
-- Total API calls per endpoint
-- Success/failure rates
-- Average response latency
-- Usage patterns and anomalies
-- Timestamp of each call
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Enables OpenAI embeddings + LLM extraction |
+| `GEMINI_API_KEY` | Enables Gemini embeddings + LLM extraction |
+| `AGORA_AUTH_TOKEN` | Default bearer token for API calls |
+| `AGORA_CODE_DB` | Override memory DB path (default: `~/.agora-code/memory.db`) |
 
 ---
 
-### LLM-Powered Extraction
-
-For non-Python APIs (Node.js, Go, Ruby, etc.), enable LLM extraction:
+## Authentication
 
 ```bash
-# Requires OPENAI_API_KEY or GEMINI_API_KEY environment variable
-export OPENAI_API_KEY=sk-...
-
-# Scan with LLM
-agora-code scan ./express-app --use-llm --llm-provider openai
-
-# Serve with LLM
-agora-code serve ./rails-app \
-  --url http://localhost:3000 \
-  --use-llm \
-  --llm-provider gemini
+agora-code auth ./my-api                              # interactive prompt
+agora-code auth ./my-api --type bearer --token mytoken
+agora-code auth ./my-api --type api-key --token mykey
+agora-code auth ./my-api --type none                  # disable
 ```
 
-**When to use LLM:**
-- ✅ Node.js/Express APIs
-- ✅ Ruby on Rails APIs  
-- ✅ Go/Gin APIs
-- ✅ Complex Python frameworks (Django with custom routers)
-- ❌ Standard FastAPI/Flask (unnecessary, AST extraction works great)
+Or pass inline:
+```bash
+agora-code serve ./my-api --url http://localhost:8000 --auth-token mytoken
+AGORA_AUTH_TOKEN=mytoken agora-code serve ./my-api --url http://localhost:8000
+```
 
-**Cost:** Typically $0.01-0.10 per scan depending on codebase size
+Auth config is saved to `.agora-code/auth.json` (gitignored).
 
 ---
 
-### Enterprise Features
+## Context Compression Levels Explained
 
-Enterprise edition includes:
-- Advanced pattern detection
-- Multi-tenant support
-- Enhanced security features
-- Priority support
+Use `--level` in the `chat` command to control how much of the API catalog is sent to the LLM:
 
 ```bash
-agora-code serve ./my-api \
-  --url https://api.example.com \
-  --enterprise
+agora-code chat ./my-api --url http://localhost:8000 --level index    # smallest
+agora-code chat ./my-api --url http://localhost:8000 --level summary  # default
+agora-code chat ./my-api --url http://localhost:8000 --level detail   # more context
+agora-code chat ./my-api --url http://localhost:8000 --level full     # entire catalog
 ```
+
+- **index** — `METHOD /path` only. Use when you have many endpoints and need to minimize tokens.
+- **summary** — `METHOD /path — description`. Best default for most sessions.
+- **detail** — Adds all parameters with types and required/optional status. Use when debugging specific endpoint contracts.
+- **full** — Raw JSON. Use for inspection or when building tools on top.
+
+The same levels apply to `agora-code inject` and the session compression system.
 
 ---
 
-## Troubleshooting
-
-### No routes found
+## Running Tests
 
 ```bash
-# Check what files agora-code is scanning
-agora-code scan ./my-api --format json
-
-# Try with LLM if using non-Python framework
-agora-code scan ./my-api --use-llm
+pip install -e ".[dev]"
+pytest tests/ -v
 ```
 
-### MCP connection issues
+60 tests covering: AST extraction, OpenAPI parsing, regex fallback, MCP server protocol, memory stats, and end-to-end scan→serve pipeline.
 
-```bash
-# Test serve command manually first
-agora-code serve ./my-api --url http://localhost:8000
+---
 
-# Should show: " MCP server ready (N tools)"
-# If errors appear, check the --url is accessible
-curl http://localhost:8000/health
-```
+## What agora-code is NOT
 
-### Memory/stats not working
-
-```bash
-# Install memory dependencies
-pip install agora-code[memory]
-
-# Check database exists
-ls -lh agora_agent_memory.db
-
-# Verify memory is enabled in serve command
-agora-code serve ./my-api --url http://localhost:8000  # memory on by default
-```
-
-### Authentication failures
-
-```bash
-# Verify auth config exists
-cat .agora-code/auth.json
-
-# Test API manually with curl
-curl -H "Authorization: Bearer YOUR_TOKEN" https://api.example.com/endpoint
-
-# Re-configure auth
-agora-code auth ./my-api --type bearer --token NEW_TOKEN
-```
+- Not an API proxy or gateway
+- Not a hosted service — everything runs locally
+- Not a replacement for Postman (it's for AI-assisted API development sessions)
+- Not dependent on any cloud service (works fully offline with keyword search)

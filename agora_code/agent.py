@@ -253,6 +253,33 @@ class MCPServer:
             for route in catalog.routes
         }
 
+        # ── Session restoration (context manager layer) ──────────────────
+        # Load JSON session if one exists from the last 24h.
+        # The compressed banner is emitted once at startup so the AI assistant
+        # immediately knows where the user left off — no prompt needed.
+        self._restored_banner: Optional[str] = None
+        try:
+            from agora_code.session import load_session_if_recent
+            from agora_code.tldr import session_restored_banner
+            session = load_session_if_recent(max_age_hours=24)
+            if session:
+                self._restored_banner = session_restored_banner(session)
+        except Exception:
+            pass  # non-fatal — memory is additive
+
+        # ── VectorStore for call logging ──────────────────────────────────
+        self._vs = None
+        self._session_id: Optional[str] = None
+        try:
+            from agora_code.vector_store import get_store
+            from agora_code.session import load_session
+            self._vs = get_store()
+            sess = load_session()
+            if sess:
+                self._session_id = sess.get("session_id")
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ #
     #  Stdio server loop                                                   #
     # ------------------------------------------------------------------ #
@@ -266,6 +293,21 @@ class MCPServer:
         protocol = asyncio.StreamReaderProtocol(stdin)
         loop = asyncio.get_event_loop()
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+
+        # Emit session-restored banner as a log notification so the AI sees it
+        # immediately without any user prompt needed.
+        if self._restored_banner:
+            notif = {
+                "jsonrpc": "2.0",
+                "method": "notifications/message",
+                "params": {
+                    "level": "info",
+                    "logger": "agora-code",
+                    "data": self._restored_banner,
+                },
+            }
+            sys.stdout.write(json.dumps(notif) + "\n")
+            sys.stdout.flush()
 
         while True:
             request: Optional[Dict] = None
@@ -363,15 +405,48 @@ class MCPServer:
 
         result, context_lines = await node.run(args)
 
+        status = result.get("status", 0)
+        latency = result.get("_latency_ms", 0.0)
+        error = result.get("_error")
+        body = result.get("body", {})
+        success = not error and 200 <= status < 300
+
+        # ── Log call to VectorStore for pattern detection ─────────────────
+        if self._vs is not None:
+            try:
+                self._vs.log_api_call(
+                    session_id=self._session_id,
+                    method=node.route.method,
+                    path=node.route.path,
+                    request_params=args,
+                    response_status=status,
+                    latency_ms=latency,
+                    success=success,
+                    error_message=error,
+                )
+            except Exception:
+                pass
+
         lines: List[str] = []
+
+        # ── Surface failure patterns (token-efficient hint) ───────────────
+        if not success and self._vs is not None:
+            try:
+                patterns = self._vs.get_failure_patterns(node.route.path, min_occurrences=3)
+                for p in patterns[:1]:  # show max 1 hint to save tokens
+                    lines.append(
+                        f"💡 PATTERN: {p['params']} has failed "
+                        f"{p['occurrences']}x ({int(p['success_rate']*100)}% success rate). "
+                        f"{p['suggestion']}"
+                    )
+                    lines.append("")
+            except Exception:
+                pass
+
+        # ── agora-mem per-route stats (existing feature) ──────────────────
         if context_lines:
             lines.extend(context_lines)
             lines.append("")
-
-        status = result.get("status", 0)
-        latency = result.get("_latency_ms", 0)
-        error = result.get("_error")
-        body = result.get("body", {})
 
         if error:
             lines.append(f"❌ {node.route.method} {node.route.path} → {status}")

@@ -412,43 +412,34 @@ def chat(target, url, use_llm, level, auth_token, auth_type):
 @main.command()
 @click.option("--db-path", default="./agora_agent_memory.db")
 def status(db_path):
-    """Show what's been scanned and cached.
+    """Show current session state and recent call stats.
 
     \b
     agora-code status
     """
+    from agora_code.session import load_session
+    from agora_code.tldr import compress_session, estimate_tokens
+
+    session = load_session()
+    if not session:
+        _echo("📭 No active session. Start one with:")
+        _echo("   agora-code checkpoint --goal \"What you're trying to do\"")
+    else:
+        _echo("\n" + "═" * 60)
+        _echo(f"🗂  SESSION: {session.get('session_id', 'unknown')}")
+        _echo("═" * 60)
+        _echo(compress_session(session, level="detail"))
+
+    # Also show VectorStore stats if available
     try:
-        from agora_mem import MemoryStore
-        from agora_code.memory_layer import AgentMemory
-    except ImportError:
-        _echo("❌ agora-mem not installed. Run: pip install agora-code[memory]")
-        sys.exit(1)
-
-    store = MemoryStore(storage="sqlite", db_path=db_path)
-    memory = AgentMemory(store)
-
-    async def _run():
-        session_ids = await store.list_sessions()
-        scan_sessions = [s for s in session_ids if s.startswith("scan:")]
-
-        if not scan_sessions:
-            _echo("📭 No scans cached yet. Run: agora-code scan <target>")
-            return
-
-        _echo(f"\n📦 Cached scans ({len(scan_sessions)}):\n")
-        for sid in scan_sessions:
-            cache = await memory.load_scan_cache(sid.removeprefix("scan:"))
-            if cache:
-                import time as _time
-                age = _time.time() - cache.get("scanned_at", 0)
-                age_str = f"{int(age // 3600)}h ago" if age > 3600 else f"{int(age // 60)}m ago"
-                _echo(
-                    f"  ✅ {cache['target']} — "
-                    f"{cache['route_count']} routes via {cache['extractor']} "
-                    f"({age_str})"
-                )
-
-    asyncio.run(_run())
+        from agora_code.vector_store import get_store
+        stats = get_store().get_stats()
+        _echo(f"\n🧠 Memory: {stats['sessions']} sessions, "
+              f"{stats['learnings']} learnings, "
+              f"{stats['api_calls']} API calls logged"
+              f"  [vector search: {'on' if stats['vector_search'] else 'off (install sqlite-vec)'}]")
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -517,33 +508,208 @@ def inject(level, quiet, db_path):
 #  state                                                                       #
 # --------------------------------------------------------------------------- #
 
-@main.group()
-def state():
-    """Manage agora-code session state."""
-    pass
+# --------------------------------------------------------------------------- #
+#  checkpoint                                                                  #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.option("--goal", default=None, help="What you're trying to accomplish")
+@click.option("--hypothesis", default=None, help="Current working theory")
+@click.option("--action", default=None, help="What you're doing right now")
+@click.option("--api", default=None, help="Base URL of the API being tested")
+@click.option("--next", "next_step", default=None, multiple=True, help="Next steps (repeatable)")
+@click.option("--blocker", default=None, multiple=True, help="Blockers (repeatable)")
+def checkpoint(goal, hypothesis, action, api, next_step, blocker):
+    """Save current session state to .agora-code/session.json.
+
+    \b
+    agora-code checkpoint --goal "Debug POST /users failures"
+    agora-code checkpoint --hypothesis "Email validation too strict"
+    agora-code checkpoint --action "Testing with + in email"
+    """
+    from agora_code.session import load_session, new_session, update_session
+
+    updates: dict = {}
+    if goal:       updates["goal"] = goal
+    if hypothesis: updates["hypothesis"] = hypothesis
+    if action:     updates["current_action"] = action
+    if api:        updates["api_base_url"] = api
+    if next_step:  updates["next_steps"] = list(next_step)
+    if blocker:    updates["blockers"] = [b for b in blocker]
+
+    session = update_session(updates)
+    _echo(f"✅ Session saved: {session['session_id']}")
+    _echo(f"   Goal: {session.get('goal') or '(none)'} | Status: {session.get('status', 'in_progress')}")
 
 
-@state.command(name="save")
-@click.option("--db-path", default="./agora_agent_memory.db")
-def state_save(db_path):
-    """Save current session state (called by PreCompact Claude hook)."""
-    # Re-scan current directory and refresh cache
-    from agora_code.scanner import scan as do_scan
+# --------------------------------------------------------------------------- #
+#  complete                                                                    #
+# --------------------------------------------------------------------------- #
 
-    async def _run():
-        try:
-            catalog = await do_scan(".", use_llm=False)
-            if len(catalog) == 0:
-                return
-            from agora_mem import MemoryStore
-            from agora_code.memory_layer import AgentMemory
-            store = MemoryStore(storage="sqlite", db_path=db_path)
-            memory = AgentMemory(store)
-            await memory.store_scan_result(".", catalog, ttl_seconds=0)  # no expiry
-        except Exception:
-            pass  # Hooks should never crash Claude
+@main.command()
+@click.option("--summary", default=None, help="What you accomplished")
+@click.option("--outcome", default="success", type=click.Choice(["success", "partial", "abandoned"]),
+              help="How the session ended")
+def complete(summary, outcome):
+    """Archive the current session and store it in memory.
 
-    asyncio.run(_run())
+    \b
+    agora-code complete --summary "Fixed email validation, POST /users works now"
+    agora-code complete --outcome partial
+    """
+    from agora_code.session import archive_session
+
+    session = archive_session(summary=summary, outcome=outcome)
+    _echo(f"✅ Session '{session.get('session_id')}' archived ({outcome}).")
+    if summary:
+        _echo(f"   Summary: {summary}")
+    _echo("   Session stored in memory for future recall.")
+
+
+# --------------------------------------------------------------------------- #
+#  restore                                                                     #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.argument("session_id", required=False)
+def restore(session_id):
+    """Restore a past session as the active session.
+
+    \b
+    agora-code restore                                  # list sessions
+    agora-code restore 2026-03-08-debug-post-users      # restore specific
+    """
+    from agora_code.vector_store import get_store
+    from agora_code.session import save_session
+    from agora_code.tldr import compress_session
+
+    vs = get_store()
+
+    if not session_id:
+        # List recent sessions
+        sessions = vs.list_sessions(limit=10)
+        if not sessions:
+            _echo("📭 No sessions in memory yet.")
+            return
+        _echo("\n📚 Recent sessions (use restore <session_id>):\n")
+        for s in sessions:
+            _echo(f"  {s['status'][:1].upper()}  {s['session_id']:<45} {s['last_active'][:10]}  {s.get('goal','')[:40]}")
+        return
+
+    data = vs.load_session(session_id)
+    if not data:
+        _echo(f"❌ Session '{session_id}' not found.")
+        sys.exit(1)
+
+    # Restore: mark in_progress, resave to JSON
+    data["status"] = "in_progress"
+    save_session(data)
+    _echo(f"✅ Session '{session_id}' restored as active.")
+    _echo("")
+    _echo(compress_session(data, level="summary"))
+
+
+# --------------------------------------------------------------------------- #
+#  learn                                                                       #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.argument("finding")
+@click.option("--endpoint", default=None, help="e.g. 'POST /users'")
+@click.option("--api", default=None, help="Base URL of the API")
+@click.option("--evidence", default=None, help="Supporting evidence or example")
+@click.option("--confidence", default="confirmed",
+              type=click.Choice(["confirmed", "likely", "hypothesis"]))
+@click.option("--tags", default=None, help="Comma-separated tags")
+def learn(finding, endpoint, api, evidence, confidence, tags):
+    """Store a permanent learning about an API.
+
+    \b
+    agora-code learn "POST /users rejects + in emails" --tags email,validation
+    agora-code learn "Rate limit is 100 req/min" --endpoint "GET /data" --confidence confirmed
+    """
+    from agora_code.vector_store import get_store
+    from agora_code.embeddings import get_embedding
+    from agora_code.session import load_session
+
+    session = load_session()
+    session_id = session.get("session_id") if session else None
+
+    method = path = None
+    if endpoint:
+        parts = endpoint.strip().split(None, 1)
+        method = parts[0].upper() if len(parts) >= 1 else None
+        path   = parts[1] if len(parts) >= 2 else None
+
+    tag_list = [t.strip() for t in tags.split(",")] if tags else []
+    embed = get_embedding(finding + " " + (evidence or ""))
+
+    lid = get_store().store_learning(
+        finding=finding,
+        session_id=session_id,
+        api_base_url=api,
+        endpoint_method=method,
+        endpoint_path=path,
+        evidence=evidence,
+        confidence=confidence,
+        tags=tag_list,
+        embedding=embed,
+    )
+    _echo(f"✅ Learning stored (id: {lid[:8]}…)")
+    if embed is None:
+        _echo("   ⚠️  No embedding generated — set OPENAI_API_KEY for semantic recall.")
+        _echo("   Keyword search will still work.")
+
+
+# --------------------------------------------------------------------------- #
+#  recall                                                                      #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.argument("query")
+@click.option("--limit", "-n", default=5, help="Max results")
+def recall(query, limit):
+    """Search your learnings knowledge base semantically.
+
+    \b
+    agora-code recall "email validation"
+    agora-code recall "rate limit" --limit 10
+    """
+    from agora_code.vector_store import get_store
+    from agora_code.embeddings import get_query_embedding
+
+    vs = get_store()
+    embed = get_query_embedding(query)
+
+    if embed:
+        results = vs.search_learnings_semantic(embed, k=limit)
+        mode = "semantic"
+    else:
+        results = []
+        mode = None
+
+    if not results:
+        results = vs.search_learnings_keyword(query, k=limit)
+        mode = "keyword"
+
+    if not results:
+        _echo(f"📭 No learnings match '{query}'.")
+        _echo("   Store one with: agora-code learn \"your finding\"")
+        return
+
+    _echo(f"\n🔍 {len(results)} result(s) [{mode} search]:\n")
+    for i, r in enumerate(results, 1):
+        ep = ""
+        if r.get("endpoint_method") and r.get("endpoint_path"):
+            ep = f"  [{r['endpoint_method']} {r['endpoint_path']}]"
+        conf_emoji = {"confirmed": "✓", "likely": "~", "hypothesis": "?"}.get(r.get("confidence", ""), "")
+        tags = ", ".join(r.get("tags") or [])
+        _echo(f"  {i}. {conf_emoji} {r['finding']}{ep}")
+        if r.get("evidence"):
+            _echo(f"     Evidence: {r['evidence']}")
+        if tags:
+            _echo(f"     Tags: {tags}")
+        _echo("")
 
 
 # --------------------------------------------------------------------------- #
