@@ -96,27 +96,40 @@ def new_session(
     goal: Optional[str] = None,
     api_base_url: Optional[str] = None,
     tags: Optional[List[str]] = None,
+    context: Optional[str] = None,   # any free-text project context
 ) -> Dict[str, Any]:
     """
     Create a fresh session dict.
     Does NOT save to disk — call save_session() to persist.
+
+    Works for any dev session — API or non-API.
+    API-specific fields (api_base_url, endpoints_tested) are optional
+    and simply stay empty for general coding sessions.
     """
     now = _now()
     return {
+        # ── identity ──────────────────────────────────────────────
         "session_id":      _slug(goal),
         "started_at":      now,
         "last_active":     now,
         "status":          "in_progress",
+        # ── what you're working on ─────────────────────────────────
         "goal":            goal or "",
         "hypothesis":      None,
         "current_action":  None,
+        "context":         context or "",        # free-text: project notes, stack info
+        # ── what you found ─────────────────────────────────────────
+        "discoveries":     [],
+        "decisions_made":  [],
+        # ── what's next ────────────────────────────────────────────
+        "next_steps":      [],
+        "blockers":        [],
+        "tags":            tags or [],
+        # ── code changes (non-API) ─────────────────────────────────
+        "files_changed":   [],   # [{"file": "foo.py", "what": "added retry logic"}]
+        # ── API-specific (stays empty for non-API sessions) ────────
         "api_base_url":    api_base_url or "",
-        "endpoints_tested":  [],
-        "discoveries":       [],
-        "decisions_made":    [],
-        "next_steps":        [],
-        "blockers":          [],
-        "tags":              tags or [],
+        "endpoints_tested": [],
     }
 
 

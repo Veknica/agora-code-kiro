@@ -516,16 +516,23 @@ def inject(level, quiet, db_path):
 @click.option("--goal", default=None, help="What you're trying to accomplish")
 @click.option("--hypothesis", default=None, help="Current working theory")
 @click.option("--action", default=None, help="What you're doing right now")
+@click.option("--context", default=None, help="Free-text project context or notes")
 @click.option("--api", default=None, help="Base URL of the API being tested")
 @click.option("--next", "next_step", default=None, multiple=True, help="Next steps (repeatable)")
 @click.option("--blocker", default=None, multiple=True, help="Blockers (repeatable)")
-def checkpoint(goal, hypothesis, action, api, next_step, blocker):
+@click.option("--file", "file_changed", default=None, multiple=True,
+              help="File you changed, optionally with note: 'auth.py:added retry logic'")
+def checkpoint(goal, hypothesis, action, context, api, next_step, blocker, file_changed):
     """Save current session state to .agora-code/session.json.
 
     \b
-    agora-code checkpoint --goal "Debug POST /users failures"
-    agora-code checkpoint --hypothesis "Email validation too strict"
-    agora-code checkpoint --action "Testing with + in email"
+    Works for any project — API or non-API:
+
+    agora-code checkpoint --goal "Refactor auth module"
+    agora-code checkpoint --hypothesis "SessionManager needs lock"
+    agora-code checkpoint --action "Adding retry logic to validate()"
+    agora-code checkpoint --file "auth.py:added retry" --file "tests/test_auth.py:updated tests"
+    agora-code checkpoint --next "Write test for edge case" --blocker "Waiting for review"
     """
     from agora_code.session import load_session, new_session, update_session
 
@@ -533,9 +540,19 @@ def checkpoint(goal, hypothesis, action, api, next_step, blocker):
     if goal:       updates["goal"] = goal
     if hypothesis: updates["hypothesis"] = hypothesis
     if action:     updates["current_action"] = action
+    if context:    updates["context"] = context
     if api:        updates["api_base_url"] = api
     if next_step:  updates["next_steps"] = list(next_step)
     if blocker:    updates["blockers"] = [b for b in blocker]
+    if file_changed:
+        files = []
+        for f in file_changed:
+            if ":" in f:
+                fname, what = f.split(":", 1)
+                files.append({"file": fname.strip(), "what": what.strip()})
+            else:
+                files.append({"file": f.strip(), "what": ""})
+        updates["files_changed"] = files
 
     session = update_session(updates)
     _echo(f"✅ Session saved: {session['session_id']}")
@@ -554,7 +571,7 @@ def complete(summary, outcome):
     """Archive the current session and store it in memory.
 
     \b
-    agora-code complete --summary "Fixed email validation, POST /users works now"
+    agora-code complete --summary "Refactored auth, added retry logic"
     agora-code complete --outcome partial
     """
     from agora_code.session import archive_session
@@ -564,6 +581,50 @@ def complete(summary, outcome):
     if summary:
         _echo(f"   Summary: {summary}")
     _echo("   Session stored in memory for future recall.")
+
+
+# --------------------------------------------------------------------------- #
+#  inject                                                                      #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.option("--level", default="summary",
+              type=click.Choice(["index", "summary", "detail", "full"]),
+              help="Compression level (default: summary ~200 tokens)")
+@click.option("--token-budget", default=2000, help="Max tokens for auto-level picking")
+@click.option("--raw", is_flag=True, default=False, help="Print raw session JSON")
+def inject(level, token_budget, raw):
+    """Print compressed session context for injection into any coding agent.
+
+    \b
+    Use with Claude Code hooks (.claude/settings.json):
+        {"hooks": {"PreToolUse": [{"command": "agora-code inject"}]}}
+
+    Or pipe directly:
+        agora-code inject | pbcopy   # paste into any chat
+        agora-code inject --level detail
+        agora-code inject --raw      # full session JSON
+    """
+    from agora_code.session import load_session_if_recent, load_session
+    from agora_code.tldr import compress_session, auto_compress_session, session_restored_banner
+
+    session = load_session_if_recent(max_age_hours=48) or load_session()
+    if not session:
+        # Silently exit — no session to inject (don't pollute agent context)
+        return
+
+    if raw:
+        import json as _json
+        click.echo(_json.dumps(session, indent=2))
+        return
+
+    if level == "auto" or token_budget:
+        text = auto_compress_session(session, token_budget=token_budget)
+    else:
+        text = compress_session(session, level=level)
+
+    click.echo(text)   # plain echo — no emoji, goes straight to agent context
+
 
 
 # --------------------------------------------------------------------------- #
