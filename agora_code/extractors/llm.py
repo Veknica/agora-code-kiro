@@ -1,11 +1,18 @@
 """
 extractors/llm.py — Tier 3: LLM-based extractor.
 
-Works for any language, any framework. Costs a small amount per repo.
-Requires: pip install agora-code[openai] or agora-code[gemini]
+Works for any language, any framework.
 
-The LLM reads each source file and returns structured route info.
-Skips files that don't look like they contain routes (heuristic filter).
+Provider auto-detection (from env vars, in priority order):
+  ANTHROPIC_API_KEY  →  claude-3-5-haiku-20241022  (fast, cheap)
+  OPENAI_API_KEY     →  gpt-4o-mini
+  GEMINI_API_KEY     →  gemini-1.5-flash
+
+Override:
+  LLM_PROVIDER=openai  (or "claude", "gemini")
+  LLM_MODEL=gpt-4o
+
+  Or pass provider= / model= directly to extract().
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from agora_code.models import Param, Route, RouteCatalog
 
@@ -72,15 +79,43 @@ Rules:
 """
 
 
-def can_handle(target: str) -> bool:
-    """Can always handle — but requires API key."""
-    return True
+def _detect_provider() -> tuple[str, str]:
+    """
+    Auto-detect LLM provider from environment.
+    Returns (provider_name, default_model).
+    """
+    env_override = os.environ.get("LLM_PROVIDER", "").lower()
+    env_model    = os.environ.get("LLM_MODEL", "")
+
+    # Explicit override takes priority
+    if env_override in ("claude", "anthropic"):
+        return "claude", env_model or "claude-3-5-haiku-20241022"
+    if env_override == "openai":
+        return "openai", env_model or "gpt-4o-mini"
+    if env_override == "gemini":
+        return "gemini",  env_model or "gemini-1.5-flash"
+
+    # Auto-detect from API keys
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "claude", env_model or "claude-3-5-haiku-20241022"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai", env_model or "gpt-4o-mini"
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini", env_model or "gemini-1.5-flash"
+
+    return "", ""   # no provider available
+
+
+def is_available() -> bool:
+    """True if any LLM provider is configured."""
+    provider, _ = _detect_provider()
+    return bool(provider)
 
 
 async def extract(
     target: str,
-    provider: str = "openai",
-    model: str = None,
+    provider: str = "auto",
+    model: Optional[str] = None,
     max_files: int = 50,
 ) -> RouteCatalog:
     """
@@ -88,10 +123,24 @@ async def extract(
 
     Args:
         target:    repo directory or single file path
-        provider:  "openai" | "gemini"
+        provider:  "auto" | "claude" | "openai" | "gemini"
+                   "auto" picks from ANTHROPIC/OPENAI/GEMINI_API_KEY
         model:     override default model
         max_files: cap to avoid runaway costs
     """
+    if provider in ("auto", "", None):
+        detected_provider, detected_model = _detect_provider()
+        if not detected_provider:
+            raise RuntimeError(
+                "No LLM provider available. Set one of:\n"
+                "  ANTHROPIC_API_KEY  (Claude — recommended)\n"
+                "  OPENAI_API_KEY     (GPT-4o-mini)\n"
+                "  GEMINI_API_KEY     (Gemini Flash)\n"
+                "Or set LLM_PROVIDER=claude|openai|gemini explicitly."
+            )
+        provider = detected_provider
+        model = model or detected_model
+
     path = Path(target)
     files = [path] if path.is_file() else [
         f for f in path.rglob("*")
@@ -106,26 +155,32 @@ async def extract(
 
     for f in files:
         try:
-            source = f.read_text(encoding="utf-8", errors="ignore")[:4000]  # cap tokens
+            source = f.read_text(encoding="utf-8", errors="ignore")[:4000]
             result = await llm_fn(source)
             routes.extend(_parse_llm_output(result))
         except Exception:
-            continue  # don't fail entire scan on one file
+            continue
 
-    return RouteCatalog(source=str(target), extractor="llm", routes=routes)
+    return RouteCatalog(source=str(target), extractor=f"llm/{provider}", routes=routes)
 
 
 # --------------------------------------------------------------------------- #
 #  LLM backends                                                                #
 # --------------------------------------------------------------------------- #
 
-def _get_llm(provider: str, model: str = None):
-    if provider == "openai":
+def _get_llm(provider: str, model: Optional[str] = None):
+    provider = provider.lower()
+    if provider in ("claude", "anthropic"):
+        return _make_claude_llm(model or "claude-3-5-haiku-20241022")
+    elif provider == "openai":
         return _make_openai_llm(model or "gpt-4o-mini")
     elif provider == "gemini":
         return _make_gemini_llm(model or "gemini-1.5-flash")
     else:
-        raise ValueError(f"Unknown LLM provider: {provider!r}. Choose 'openai' or 'gemini'")
+        raise ValueError(
+            f"Unknown LLM provider: {provider!r}. "
+            "Use 'claude', 'openai', or 'gemini'."
+        )
 
 
 def _make_openai_llm(model: str):
@@ -177,6 +232,36 @@ def _make_gemini_llm(model: str):
             f"Extract routes from this file:\n\n```\n{source}\n```"
         )
         return resp.text or "{}"
+
+    return call
+
+
+def _make_claude_llm(model: str):
+    try:
+        import anthropic
+    except ImportError:
+        raise ImportError(
+            "Install anthropic: pip install anthropic\n"
+            "Or: pip install agora-code[claude]"
+        )
+    client = anthropic.AsyncAnthropic()
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True,
+    )
+    async def call(source: str) -> str:
+        resp = await client.messages.create(
+            model=model,
+            max_tokens=1024,
+            system=_SYSTEM_PROMPT,
+            messages=[{
+                "role": "user",
+                "content": f"Extract routes from this file:\n\n```\n{source}\n```",
+            }],
+        )
+        return resp.content[0].text if resp.content else "{}"
 
     return call
 
