@@ -713,6 +713,134 @@ def recall(query, limit):
 
 
 # --------------------------------------------------------------------------- #
+#  track-diff                                                                  #
+# --------------------------------------------------------------------------- #
+
+@main.command("track-diff")
+@click.argument("file_path")
+@click.option("--committed", is_flag=True, default=False,
+              help="Diff against HEAD~1 (last commit) rather than working tree")
+def track_diff(file_path, committed):
+    """Capture a git diff for a file and store a compact summary in memory.
+
+    \b
+    Called automatically by PostToolUse hook after Write/Edit.
+    Can also be run manually:
+
+    agora-code track-diff agora_code/auth.py
+    agora-code track-diff agora_code/auth.py --committed
+    """
+    import subprocess as sp
+    from agora_code.vector_store import get_store
+    from agora_code.session import load_session, _get_git_branch, _get_commit_sha
+
+    # Get the diff
+    if committed:
+        cmd = ["git", "diff", "HEAD~1", "--", file_path]
+    else:
+        cmd = ["git", "diff", "HEAD", "--", file_path]
+
+    try:
+        result = sp.run(cmd, capture_output=True, text=True, timeout=10)
+        raw_diff = result.stdout.strip()
+    except Exception as e:
+        _echo(f"⚠️  Could not get diff for {file_path}: {e}")
+        return
+
+    if not raw_diff:
+        # No diff — file might be new (untracked) or unchanged
+        try:
+            r2 = sp.run(["git", "status", "--short", "--", file_path],
+                        capture_output=True, text=True, timeout=5)
+            status = r2.stdout.strip()
+            if "??" in status:
+                raw_diff = f"[new untracked file: {file_path}]"
+            else:
+                return  # Nothing to track
+        except Exception:
+            return
+
+    # Generate compact summary from diff (no LLM needed — heuristic)
+    summary = _summarize_diff(raw_diff, file_path)
+
+    session = load_session()
+    store = get_store()
+    store.save_file_change(
+        file_path=file_path,
+        diff_summary=summary,
+        diff_snippet=raw_diff[:2000],  # cap snippet at 2k chars
+        commit_sha=_get_commit_sha(),
+        session_id=session.get("session_id") if session else None,
+        branch=_get_git_branch(),
+    )
+    _echo(f"📌 Tracked: {file_path} — {summary}")
+
+
+def _summarize_diff(diff: str, file_path: str) -> str:
+    """
+    Heuristic diff summarizer — no LLM, fast, cheap.
+    Counts added/removed lines and extracts function/class names touched.
+    """
+    import re
+    lines = diff.splitlines()
+    added = [l[1:] for l in lines if l.startswith("+") and not l.startswith("+++")]
+    removed = [l[1:] for l in lines if l.startswith("-") and not l.startswith("---")]
+
+    # Find touched function/class names
+    fn_pattern = re.compile(r"(?:def |class |async def )(\w+)")
+    touched_fns = []
+    for line in added + removed:
+        for m in fn_pattern.finditer(line):
+            name = m.group(1)
+            if name not in touched_fns:
+                touched_fns.append(name)
+
+    parts = []
+    if added:
+        parts.append(f"+{len(added)} lines")
+    if removed:
+        parts.append(f"-{len(removed)} lines")
+    if touched_fns:
+        parts.append(f"in {', '.join(touched_fns[:4])}")
+
+    return f"{file_path}: {' '.join(parts)}" if parts else f"{file_path}: modified"
+
+
+# --------------------------------------------------------------------------- #
+#  file-history                                                                #
+# --------------------------------------------------------------------------- #
+
+@main.command("file-history")
+@click.argument("file_path")
+@click.option("--limit", "-n", default=20, help="Max entries to show")
+def file_history(file_path, limit):
+    """Show the tracked change history for a file.
+
+    \b
+    agora-code file-history agora_code/auth.py
+    agora-code file-history agora_code/session.py --limit 5
+    """
+    from agora_code.vector_store import get_store
+
+    history = get_store().get_file_history(file_path, limit=limit)
+    if not history:
+        _echo(f"📭 No tracked changes for '{file_path}'.")
+        _echo("   Changes are tracked automatically via PostToolUse hook.")
+        _echo(f"   Or run: agora-code track-diff {file_path}")
+        return
+
+    _echo(f"\n📋 Change history for {file_path} ({len(history)} entries):\n")
+    for entry in history:
+        ts = entry.get("timestamp", "")[:16]
+        branch = f" [{entry['branch']}]" if entry.get("branch") else ""
+        sha = f" @{entry['commit_sha'][:8]}" if entry.get("commit_sha") else ""
+        session = f" (session: {entry['session_id'][:20]}...)" if entry.get("session_id") else ""
+        _echo(f"  {ts}{branch}{sha}")
+        _echo(f"    {entry.get('diff_summary', '(no summary)')}{session}")
+    _echo("")
+
+
+# --------------------------------------------------------------------------- #
 #  memory-server                                                               #
 # --------------------------------------------------------------------------- #
 

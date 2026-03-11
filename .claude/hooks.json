@@ -29,6 +29,10 @@
                     {
                         "type": "command",
                         "command": "agora-code scan . --cache --quiet"
+                    },
+                    {
+                        "type": "command",
+                        "command": "agora-code track-diff $CLAUDE_TOOL_INPUT_FILE_PATH"
                     }
                 ]
             }

@@ -100,6 +100,31 @@ class VectorStore:
                 tags           TEXT
             )
         """)
+        # Safe migrations for sessions table
+        for col, defn in [
+            ("branch",     "TEXT"),
+            ("commit_sha", "TEXT"),
+            ("ticket",     "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {defn}")
+            except Exception:
+                pass  # Column already exists
+
+        # ── File changes (git diff tracking) ────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS file_changes (
+                id           TEXT PRIMARY KEY,
+                file_path    TEXT NOT NULL,
+                diff_summary TEXT,
+                diff_snippet TEXT,
+                commit_sha   TEXT,
+                session_id   TEXT,
+                agent_id     TEXT,
+                branch       TEXT,
+                timestamp    TEXT NOT NULL
+            )
+        """)
 
         # ── Learnings ────────────────────────────────────────────────────────
         conn.execute("""
@@ -303,11 +328,53 @@ class VectorStore:
     def list_sessions(self, limit: int = 20) -> List[Dict]:
         """List recent sessions (lightweight — no full session_data)."""
         rows = self._conn_().execute("""
-            SELECT session_id, started_at, last_active, status, goal, tags
+            SELECT session_id, started_at, last_active, status, goal, tags,
+                   branch, commit_sha, ticket
             FROM sessions
             ORDER BY last_active DESC
             LIMIT ?
         """, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ----------------------------------------------------------------------- #
+    #  File change tracking                                                     #
+    # ----------------------------------------------------------------------- #
+
+    def save_file_change(
+        self,
+        file_path: str,
+        diff_summary: str,
+        *,
+        diff_snippet: Optional[str] = None,
+        commit_sha: Optional[str] = None,
+        session_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        branch: Optional[str] = None,
+    ) -> str:
+        """Store a summarized git diff for a file. Returns record ID."""
+        conn = self._conn_()
+        fid = str(uuid.uuid4())
+        now = _now()
+        conn.execute("""
+            INSERT INTO file_changes
+                (id, file_path, diff_summary, diff_snippet, commit_sha,
+                 session_id, agent_id, branch, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (fid, file_path, diff_summary, diff_snippet, commit_sha,
+              session_id, agent_id, branch, now))
+        conn.commit()
+        return fid
+
+    def get_file_history(self, file_path: str, limit: int = 20) -> List[Dict]:
+        """Return summarized change history for a specific file, newest first."""
+        rows = self._conn_().execute("""
+            SELECT id, file_path, diff_summary, commit_sha, session_id,
+                   agent_id, branch, timestamp
+            FROM file_changes
+            WHERE file_path = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (file_path, limit)).fetchall()
         return [dict(r) for r in rows]
 
     # ----------------------------------------------------------------------- #

@@ -157,6 +157,64 @@ def _get_uncommitted_files() -> List[str]:
         return []
 
 
+def _get_commit_sha() -> Optional[str]:
+    """
+    Return the current HEAD commit SHA (short, 12 chars), or None if not in
+    a git repo or git is unavailable. Used for true checkpoint rewind.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        sha = result.stdout.strip()
+        return sha if result.returncode == 0 and sha else None
+    except Exception:
+        return None
+
+
+def _extract_ticket(branch: Optional[str]) -> Optional[str]:
+    """
+    Extract a ticket/issue number from a branch name.
+    Handles common patterns:
+      JIRA-123-fix-auth       → 'JIRA-123'
+      feature/JIRA-423-login  → 'JIRA-423'
+      fix/gh-456-null-ptr     → 'gh-456'
+      GH-78-perf              → 'GH-78'
+    Returns None if no ticket pattern found.
+    """
+    import re
+    if not branch:
+        return None
+    # Match: optional prefix/, then LETTERS-digits pattern
+    match = re.search(r'(?:^|[/-])([A-Z]{2,10}-\d+|gh-\d+|GH-\d+)', branch, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def _branch_to_goal(branch: Optional[str]) -> Optional[str]:
+    """
+    Derive a human-readable goal hint from a branch name.
+    Examples:
+      feat/auth-service       → 'Working on feat/auth-service'
+      JIRA-423-fix-login      → 'JIRA-423: fix login'
+      fix/null-pointer-error  → 'Working on fix/null-pointer-error'
+    """
+    if not branch or branch in ('HEAD', 'main', 'master', 'develop'):
+        return None
+    ticket = _extract_ticket(branch)
+    if ticket:
+        # Strip ticket prefix to get description
+        desc = re.sub(r'(?i)^[A-Z]+-\d+-?', '', branch.split('/')[-1])
+        desc = desc.replace('-', ' ').strip()
+        return f"{ticket}: {desc}" if desc else ticket
+    return f"Working on {branch}"
+
+
+import re  # noqa: E402 — needed by _branch_to_goal, placed after helpers
+
+
 # --------------------------------------------------------------------------- #
 #  Session creation                                                             #
 # --------------------------------------------------------------------------- #
@@ -178,15 +236,17 @@ def new_session(
     now = _now()
     return {
         # ── identity ──────────────────────────────────────────────
-        "session_id":      _slug(goal),
+        "session_id":      _slug(goal=goal, branch=_get_git_branch()),
         "started_at":      now,
         "last_active":     now,
         "status":          "in_progress",
         # ── git context (auto-detected) ────────────────────────────
         "branch":          _get_git_branch(),
+        "commit_sha":      _get_commit_sha(),
+        "ticket":          _extract_ticket(_get_git_branch()),
         "uncommitted_files": _get_uncommitted_files(),
         # ── what you're working on ─────────────────────────────────
-        "goal":            goal or "",
+        "goal":            goal or _branch_to_goal(_get_git_branch()) or "",
         "hypothesis":      None,
         "current_action":  None,
         "context":         context or "",        # free-text: project notes, stack info
@@ -291,10 +351,18 @@ def update_session(
     """
     existing = load_session(project_root) or new_session()
     # Auto-refresh git state on every checkpoint
-    git_updates = {
-        "branch": _get_git_branch() or existing.get("branch"),
+    branch = _get_git_branch() or existing.get("branch")
+    git_updates: Dict[str, Any] = {
+        "branch":            branch,
+        "commit_sha":        _get_commit_sha() or existing.get("commit_sha"),
+        "ticket":            _extract_ticket(branch) or existing.get("ticket"),
         "uncommitted_files": _get_uncommitted_files() or existing.get("uncommitted_files", []),
     }
+    # Auto-enrich goal from branch if not already set by user/AI
+    if not existing.get("goal") and not updates.get("goal"):
+        auto_goal = _branch_to_goal(branch)
+        if auto_goal:
+            git_updates["goal"] = auto_goal
     merged = {**existing, **git_updates, **updates}
     save_session(merged, project_root)
 

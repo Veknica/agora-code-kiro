@@ -204,6 +204,23 @@ _TOOLS = [
             },
             "required": ["query"]
         }
+    },
+    {
+        "name": "recall_file_history",
+        "description": (
+            "Return the tracked change history for a specific file — what was changed, when, "
+            "by which session, on which branch. Compact summaries, not raw diffs. "
+            "USE THIS WHEN: starting work on a file and want to know what changed recently, "
+            "debugging regressions, or understanding why a function looks the way it does."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Relative path to the file, e.g. 'agora_code/auth.py'"},
+                "limit": {"type": "integer", "default": 10}
+            },
+            "required": ["file_path"]
+        }
     }
 ]
 
@@ -474,6 +491,27 @@ async def _handle_recall_team(params: dict) -> str:
     return await _handle_recall_learnings(params, namespace="team")
 
 
+async def _handle_recall_file_history(params: dict) -> str:
+    from agora_code.vector_store import get_store
+    file_path = params.get("file_path", "").strip()
+    if not file_path:
+        return "Error: file_path is required."
+    limit = int(params.get("limit", 10))
+    history = get_store().get_file_history(file_path, limit=limit)
+    if not history:
+        return (
+            f"No tracked changes for '{file_path}'. "
+            "Changes are captured automatically by the PostToolUse hook when files are edited."
+        )
+    lines = [f"Change history for {file_path} ({len(history)} entries):"]
+    for e in history:
+        ts = e.get("timestamp", "")[:16]
+        branch = f" [{e['branch']}]" if e.get("branch") else ""
+        sha = f" @{e['commit_sha'][:8]}" if e.get("commit_sha") else ""
+        lines.append(f"• {ts}{branch}{sha}: {e.get('diff_summary', '(no summary)')}")
+    return "\n".join(lines)
+
+
 _HANDLERS = {
     "get_session_context":   _handle_get_session_context,
     "save_checkpoint":       _handle_save_checkpoint,
@@ -484,6 +522,7 @@ _HANDLERS = {
     "list_sessions":         _handle_list_sessions,
     "store_team_learning":   _handle_store_team_learning,
     "recall_team":           _handle_recall_team,
+    "recall_file_history":   _handle_recall_file_history,
 }
 
 
