@@ -149,6 +149,61 @@ _TOOLS = [
         "name": "get_memory_stats",
         "description": "Get stats about stored memory: session count, learning count, and search mode.",
         "inputSchema": {"type": "object", "properties": {}}
+    },
+    {
+        "name": "list_sessions",
+        "description": (
+            "List all past coding sessions stored in memory, with their goals, status, and branch. "
+            "USE THIS WHEN: developer asks 'what have I been working on?', or you need to find a specific "
+            "past session to restore context from. Returns session IDs you can reference with get_session_context."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20, "description": "Max sessions to return"},
+                "branch": {"type": "string", "description": "Filter by git branch name (optional)"}
+            }
+        }
+    },
+    {
+        "name": "store_team_learning",
+        "description": (
+            "Store a finding in shared team memory. Team learnings are visible to all agents and "
+            "teammates querying team namespace. Ideal for cross-project gotchas, API conventions, "
+            "or patterns multiple agents should know. "
+            "USE THIS WHEN: discovery is broadly applicable, not project-specific."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "finding": {"type": "string", "description": "What was learned"},
+                "evidence": {"type": "string", "description": "How this was discovered"},
+                "confidence": {
+                    "type": "string",
+                    "enum": ["confirmed", "likely", "hypothesis"],
+                    "default": "confirmed"
+                },
+                "tags": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["finding"]
+        }
+    },
+    {
+        "name": "recall_team",
+        "description": (
+            "Search the shared team knowledge base. Returns findings stored by any agent or teammate "
+            "in the team namespace. "
+            "USE THIS WHEN: developer asks 'has anyone figured out X?', looking for shared conventions, "
+            "or troubleshooting something others may have hit before."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to search for in team knowledge"},
+                "limit": {"type": "integer", "default": 5}
+            },
+            "required": ["query"]
+        }
     }
 ]
 
@@ -196,39 +251,62 @@ async def _handle_save_checkpoint(params: dict) -> str:
     return f"Session saved: {session['session_id']} — Goal: {session.get('goal', '(none)')}"
 
 
-async def _handle_store_learning(params: dict) -> str:
+async def _handle_store_learning(params: dict, namespace: str = "personal") -> str:
     from agora_code.vector_store import get_store
     from agora_code.embeddings import get_embedding
+    from agora_code.session import load_session, _get_git_branch, _get_uncommitted_files
 
     finding = params.get("finding", "")
     embedding = get_embedding(finding)
     store = get_store()
+
+    # Auto-capture git context at the moment of storing
+    branch = _get_git_branch()
+    files = _get_uncommitted_files()
+    # Also pull files from active session if available
+    session = load_session()
+    if session and not files:
+        files = [f.get("file", f) if isinstance(f, dict) else f
+                 for f in session.get("files_changed", [])]
+
     lid = store.store_learning(
         finding,
         evidence=params.get("evidence"),
         confidence=params.get("confidence", "confirmed"),
         tags=params.get("tags", []),
         embedding=embedding,
+        branch=branch,
+        files=files,
+        namespace=namespace,
     )
-    return f"Stored learning: {finding[:80]}{'...' if len(finding) > 80 else ''}"
+    scope = " [team]" if namespace == "team" else ""
+    return f"Stored{scope}: {finding[:80]}{'...' if len(finding) > 80 else ''}"
 
 
-def _apply_recency_scoring(results: list) -> list:
+def _apply_recency_scoring(results: list, current_branch: Optional[str] = None,
+                           current_files: Optional[List[str]] = None) -> list:
     """
-    Re-rank results by blending original relevance rank with recency.
-    Fresher learnings get a boost: score = rank_penalty + recency_bonus.
-    Items within 24h get max boost; decay over 7 days to zero.
+    Re-rank results by blending relevance rank with recency, confidence,
+    branch-match, and file-overlap scoring.
+
+    Scoring weights:
+      Rank score:       1.0 / (rank + 1)        — FTS/semantic relevance
+      Recency boost:    0.0–0.4                  — exponential decay, 48h half-life
+      Confidence boost: confirmed +0.2, likely +0.1
+      Branch score:     exact +0.30, same-prefix +0.15 (gradient, beats FG's binary)
+      File overlap:     0.2 * min(overlap/3, 1.0)  — matches FlowGuardian
     """
     from datetime import datetime, timezone
     import math
 
     now = datetime.now(timezone.utc)
+    current_files_set = set(current_files or [])
+
     scored = []
     for rank, r in enumerate(results):
-        # Base score from rank (lower rank = better relevance)
         rank_score = 1.0 / (rank + 1)
 
-        # Recency boost: 0.0 → 1.0, decaying over 7 days
+        # Recency boost
         recency_boost = 0.0
         ts = r.get("timestamp")
         if ts:
@@ -237,8 +315,7 @@ def _apply_recency_scoring(results: list) -> list:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 age_hours = (now - dt).total_seconds() / 3600
-                # Exponential decay: full boost at 0h, ~0 at 168h (7 days)
-                recency_boost = math.exp(-age_hours / 48)  # half-life = 48h
+                recency_boost = math.exp(-age_hours / 48)
             except Exception:
                 pass
 
@@ -247,37 +324,78 @@ def _apply_recency_scoring(results: list) -> list:
             r.get("confidence", "confirmed"), 0.0
         )
 
-        final_score = rank_score + (0.4 * recency_boost) + conf_boost
+        # Branch-match boost (gradient — better than FlowGuardian's binary)
+        branch_boost = 0.0
+        stored_branch = r.get("branch")
+        if current_branch and stored_branch:
+            if current_branch == stored_branch:
+                branch_boost = 0.30  # exact same branch
+            elif (current_branch.split("/")[0] == stored_branch.split("/")[0]
+                  and "/" in current_branch):
+                branch_boost = 0.15  # same branch type (feat/*, fix/*, chore/*)
+
+        # File-overlap boost (proportional, capped at 3 matches = max 0.2)
+        file_boost = 0.0
+        stored_files = set(r.get("files") or [])
+        if current_files_set and stored_files:
+            overlap = len(current_files_set & stored_files)
+            if overlap > 0:
+                file_boost = 0.2 * min(overlap / 3, 1.0)
+
+        final_score = (rank_score
+                       + 0.4 * recency_boost
+                       + conf_boost
+                       + branch_boost
+                       + file_boost)
         scored.append((final_score, r))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored]
 
 
-async def _handle_recall_learnings(params: dict) -> str:
+async def _handle_recall_learnings(params: dict, namespace: str = "personal") -> str:
     from agora_code.vector_store import get_store
     from agora_code.embeddings import get_embedding, is_available
+    from agora_code.session import load_session, _get_git_branch, _get_uncommitted_files
 
-    query = params.get("query", "")
+    raw_query = params.get("query", "")
     limit = int(params.get("limit", 5))
     store = get_store()
 
-    if is_available():
-        emb = get_embedding(query)
-        if emb:
-            results = store.search_learnings_semantic(emb, limit=limit * 2)  # fetch more for re-ranking
-        else:
-            results = store.search_learnings_keyword(query, limit=limit * 2)
-    else:
-        results = store.search_learnings_keyword(query, limit=limit * 2)
+    # Context-aware query enrichment from active session
+    current_branch = _get_git_branch()
+    current_files = _get_uncommitted_files()
+    session = load_session()
+    enriched_query = raw_query
+    if session:
+        parts = [raw_query]
+        if session.get("goal"):
+            parts.append(f"Goal: {session['goal']}")
+        if current_branch:
+            parts.append(f"Branch: {current_branch}")
+        if current_files:
+            parts.append(f"Working on: {', '.join(current_files[:5])}")
+        enriched_query = ". ".join(p for p in parts if p)
 
-    # Apply recency + confidence re-ranking, then trim to limit
-    results = _apply_recency_scoring(results)[:limit]
+    if is_available():
+        emb = get_embedding(enriched_query)
+        if emb:
+            results = store.search_learnings_semantic(emb, k=limit * 2, namespace=namespace)
+        else:
+            results = store.search_learnings_keyword(raw_query, k=limit * 2, namespace=namespace)
+    else:
+        results = store.search_learnings_keyword(raw_query, k=limit * 2, namespace=namespace)
+
+    # Apply full scoring: recency + confidence + branch-match + file-overlap
+    results = _apply_recency_scoring(results,
+                                     current_branch=current_branch,
+                                     current_files=current_files)[:limit]
 
     if not results:
-        return f"No learnings found for '{query}'. Store one with store_learning()."
+        ns_str = " in team memory" if namespace == "team" else ""
+        return f"No learnings found for '{raw_query}'{ns_str}. Store one with store_learning()."
 
-    lines = [f"Found {len(results)} learning(s) for '{query}':\n"]
+    lines = [f"Found {len(results)} learning(s) for '{raw_query}':\n"]
     for i, r in enumerate(results, 1):
         conf = {"confirmed": "✓", "likely": "~", "hypothesis": "?"}.get(r.get("confidence", ""), "")
         lines.append(f"{i}. {conf} {r['finding']}")
@@ -285,6 +403,9 @@ async def _handle_recall_learnings(params: dict) -> str:
             lines.append(f"   Evidence: {r['evidence']}")
         if r.get("tags"):
             lines.append(f"   Tags: {', '.join(r['tags'])}")
+        if r.get("branch"):
+            branch_note = " ← same branch" if r["branch"] == current_branch else f" (from {r['branch']})"
+            lines.append(f"   Branch: {r['branch']}{branch_note}")
     return "\n".join(lines)
 
 
@@ -317,13 +438,52 @@ async def _handle_get_memory_stats(params: dict) -> str:
     )
 
 
+async def _handle_list_sessions(params: dict) -> str:
+    from agora_code.vector_store import get_store
+
+    limit = int(params.get("limit", 20))
+    branch_filter = params.get("branch")
+    store = get_store()
+    sessions = store.list_sessions(limit=limit)
+
+    if branch_filter:
+        sessions = [s for s in sessions if s.get("branch") == branch_filter or
+                    (not s.get("branch") and not branch_filter)]
+
+    if not sessions:
+        return "No sessions found in memory."
+
+    lines = [f"Found {len(sessions)} session(s):\n"]
+    for s in sessions:
+        status_icon = {"in_progress": "🔄", "complete": "✅", "abandoned": "❌"}.get(
+            s.get("status", ""), "📋"
+        )
+        branch_str = f" [{s['branch']}]" if s.get("branch") else ""
+        lines.append(f"{status_icon} {s['session_id']}{branch_str}")
+        if s.get("goal"):
+            lines.append(f"   Goal: {s['goal']}")
+        lines.append(f"   Last active: {s.get('last_active', 'unknown')[:19]}")
+    return "\n".join(lines)
+
+
+async def _handle_store_team_learning(params: dict) -> str:
+    return await _handle_store_learning(params, namespace="team")
+
+
+async def _handle_recall_team(params: dict) -> str:
+    return await _handle_recall_learnings(params, namespace="team")
+
+
 _HANDLERS = {
-    "get_session_context": _handle_get_session_context,
-    "save_checkpoint":     _handle_save_checkpoint,
-    "store_learning":      _handle_store_learning,
-    "recall_learnings":    _handle_recall_learnings,
-    "complete_session":    _handle_complete_session,
-    "get_memory_stats":    _handle_get_memory_stats,
+    "get_session_context":   _handle_get_session_context,
+    "save_checkpoint":       _handle_save_checkpoint,
+    "store_learning":        _handle_store_learning,
+    "recall_learnings":      _handle_recall_learnings,
+    "complete_session":      _handle_complete_session,
+    "get_memory_stats":      _handle_get_memory_stats,
+    "list_sessions":         _handle_list_sessions,
+    "store_team_learning":   _handle_store_team_learning,
+    "recall_team":           _handle_recall_team,
 }
 
 
@@ -388,11 +548,19 @@ async def serve_memory() -> None:
     """Main loop — reads JSON-RPC from stdin, writes to stdout."""
     # Emit session banner on startup
     try:
-        from agora_code.session import load_session_if_recent
+        from agora_code.session import load_session_if_recent, _get_git_branch
         from agora_code.tldr import session_restored_banner
         session = load_session_if_recent(max_age_hours=48)
         if session:
             banner = session_restored_banner(session, token_budget=2000)
+            # Branch-change warning
+            stored_branch = session.get("branch")
+            current_branch = _get_git_branch()
+            if stored_branch and current_branch and stored_branch != current_branch:
+                banner = (
+                    f"⚠️  Branch changed: was `{stored_branch}`, now `{current_branch}`\n\n"
+                    + banner
+                )
             _send({
                 "jsonrpc": "2.0",
                 "method": "notifications/message",

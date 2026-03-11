@@ -113,9 +113,22 @@ class VectorStore:
                 finding         TEXT NOT NULL,
                 evidence        TEXT,
                 confidence      TEXT DEFAULT 'confirmed',
-                tags            TEXT
+                tags            TEXT,
+                branch          TEXT,
+                files           TEXT,
+                namespace       TEXT DEFAULT 'personal'
             )
         """)
+        # Safe migrations for existing DBs — ADD COLUMN IF NOT EXISTS
+        for col, defn in [
+            ("branch",    "TEXT"),
+            ("files",     "TEXT"),
+            ("namespace", "TEXT DEFAULT 'personal'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE learnings ADD COLUMN {col} {defn}")
+            except Exception:
+                pass  # Column already exists
         # FTS5 over learnings — always available
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS learnings_fts USING fts5(
@@ -313,21 +326,27 @@ class VectorStore:
         confidence: str = "confirmed",
         tags: Optional[list[str]] = None,
         embedding: Optional[list[float]] = None,
+        branch: Optional[str] = None,
+        files: Optional[list[str]] = None,
+        namespace: str = "personal",
     ) -> str:
         """Store a learning and (optionally) its embedding. Returns learning ID."""
         conn = self._conn_()
         lid = str(uuid.uuid4())
         now = _now()
         tags_json = json.dumps(tags or [])
+        files_json = json.dumps(files or [])
 
         conn.execute("""
             INSERT INTO learnings
                 (id, session_id, timestamp, api_base_url, endpoint_method,
-                 endpoint_path, finding, evidence, confidence, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 endpoint_path, finding, evidence, confidence, tags,
+                 branch, files, namespace)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             lid, session_id, now, api_base_url, endpoint_method,
             endpoint_path, finding, evidence, confidence, tags_json,
+            branch, files_json, namespace,
         ))
 
         if embedding and self._vec_available:
@@ -345,6 +364,7 @@ class VectorStore:
         self,
         query_embedding: list[float],
         k: int = 5,
+        namespace: str = "personal",
     ) -> List[Dict]:
         """Cosine similarity search over learnings. Returns [] if sqlite-vec unavailable."""
         if not self._vec_available or not self._vec_dim:
@@ -358,26 +378,36 @@ class VectorStore:
             rows = self._conn_().execute(f"""
                 SELECT l.id, l.finding, l.evidence, l.confidence, l.tags,
                        l.endpoint_method, l.endpoint_path, l.timestamp,
+                       l.branch, l.files, l.namespace,
                        v.distance
                 FROM learnings_vec_{dim} v
                 JOIN learnings l ON l.id = v.learning_id
                 WHERE v.embedding MATCH ? AND k = ?
+                  AND (l.namespace = ? OR l.namespace IS NULL)
                 ORDER BY v.distance
-            """, (self._pack(query_embedding), k * 2)).fetchall()
+            """, (self._pack(query_embedding), k * 2, namespace)).fetchall()
 
             return [_learning_row(r) for r in rows[:k]]
         except Exception:
             return []
 
-    def search_learnings_keyword(self, query: str, k: int = 5) -> List[Dict]:
+    def search_learnings_keyword(
+        self,
+        query: str,
+        k: int = 5,
+        namespace: str = "personal",
+    ) -> List[Dict]:
         """FTS5/BM25 keyword search over learnings. Always works."""
         if not query.strip():
             # No query — return recent
             rows = self._conn_().execute("""
                 SELECT id, finding, evidence, confidence, tags,
-                       endpoint_method, endpoint_path, timestamp
-                FROM learnings ORDER BY timestamp DESC LIMIT ?
-            """, (k,)).fetchall()
+                       endpoint_method, endpoint_path, timestamp,
+                       branch, files, namespace
+                FROM learnings
+                WHERE (namespace = ? OR namespace IS NULL)
+                ORDER BY timestamp DESC LIMIT ?
+            """, (namespace, k)).fetchall()
             return [_learning_row(r) for r in rows]
 
         clean = query.replace('"', '""')
@@ -385,23 +415,27 @@ class VectorStore:
             rows = self._conn_().execute("""
                 SELECT l.id, l.finding, l.evidence, l.confidence, l.tags,
                        l.endpoint_method, l.endpoint_path, l.timestamp,
+                       l.branch, l.files, l.namespace,
                        bm25(learnings_fts) as score
                 FROM learnings_fts f
                 JOIN learnings l ON l.id = f.id
                 WHERE learnings_fts MATCH ?
+                  AND (l.namespace = ? OR l.namespace IS NULL)
                 ORDER BY score
                 LIMIT ?
-            """, (f'"{clean}"', k)).fetchall()
+            """, (f'"{clean}"', namespace, k)).fetchall()
             return [_learning_row(r) for r in rows]
         except Exception:
             # FTS5 match failed — fall back to LIKE
             rows = self._conn_().execute("""
                 SELECT id, finding, evidence, confidence, tags,
-                       endpoint_method, endpoint_path, timestamp
+                       endpoint_method, endpoint_path, timestamp,
+                       branch, files, namespace
                 FROM learnings
-                WHERE finding LIKE ? OR evidence LIKE ?
+                WHERE (finding LIKE ? OR evidence LIKE ?)
+                  AND (namespace = ? OR namespace IS NULL)
                 ORDER BY timestamp DESC LIMIT ?
-            """, (f"%{query}%", f"%{query}%", k)).fetchall()
+            """, (f"%{query}%", f"%{query}%", namespace, k)).fetchall()
             return [_learning_row(r) for r in rows]
 
     # ----------------------------------------------------------------------- #
@@ -539,6 +573,10 @@ def _learning_row(row) -> Dict:
         d["tags"] = json.loads(d.get("tags") or "[]")
     except Exception:
         d["tags"] = []
+    try:
+        d["files"] = json.loads(d.get("files") or "[]")
+    except Exception:
+        d["files"] = []
     d.pop("score", None)
     d.pop("distance", None)
     return d

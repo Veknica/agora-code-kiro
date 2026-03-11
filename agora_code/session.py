@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,6 +99,65 @@ def _resolve_session_path() -> Path:
 
 
 # --------------------------------------------------------------------------- #
+#  Git helpers                                                                 #
+# --------------------------------------------------------------------------- #
+
+def _get_git_branch() -> Optional[str]:
+    """
+    Return current git branch name, or None if not in a git repo
+    or git is unavailable. Uses rev-parse for compatibility with
+    older git versions (works even in detached HEAD — returns 'HEAD').
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        )
+        branch = result.stdout.strip()
+        return branch if result.returncode == 0 and branch else None
+    except Exception:
+        return None
+
+
+def _get_uncommitted_files() -> List[str]:
+    """
+    Return list of files with uncommitted changes (staged + unstaged).
+    Falls back to last-commit files if the working tree is clean.
+    Returns [] if not in a git repo or git unavailable.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        files: List[str] = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Format: "XY filename" — skip the 2-char status prefix
+            parts = line.split(maxsplit=1)
+            if len(parts) >= 2:
+                fpath = parts[1].strip()
+                # Handle renames: "old -> new"
+                if " -> " in fpath:
+                    fpath = fpath.split(" -> ")[1]
+                files.append(fpath)
+        # Fallback: if tree is clean, grab last commit's files
+        if not files:
+            r2 = subprocess.run(
+                ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r2.returncode == 0:
+                files = [f.strip() for f in r2.stdout.splitlines() if f.strip()]
+        return files
+    except Exception:
+        return []
+
+
+# --------------------------------------------------------------------------- #
 #  Session creation                                                             #
 # --------------------------------------------------------------------------- #
 
@@ -122,6 +182,9 @@ def new_session(
         "started_at":      now,
         "last_active":     now,
         "status":          "in_progress",
+        # ── git context (auto-detected) ────────────────────────────
+        "branch":          _get_git_branch(),
+        "uncommitted_files": _get_uncommitted_files(),
         # ── what you're working on ─────────────────────────────────
         "goal":            goal or "",
         "hypothesis":      None,
@@ -223,10 +286,25 @@ def update_session(
     """
     Merge updates into the current session and save.
     Creates a new minimal session if none exists.
+    Also auto-refreshes git branch + uncommitted files, and dual-writes
+    to SQLite so every checkpoint is browsable (not just completed sessions).
     """
     existing = load_session(project_root) or new_session()
-    merged = {**existing, **updates}
+    # Auto-refresh git state on every checkpoint
+    git_updates = {
+        "branch": _get_git_branch() or existing.get("branch"),
+        "uncommitted_files": _get_uncommitted_files() or existing.get("uncommitted_files", []),
+    }
+    merged = {**existing, **git_updates, **updates}
     save_session(merged, project_root)
+
+    # Dual-write to SQLite so sessions are always browsable
+    try:
+        from agora_code.vector_store import get_store
+        get_store().save_session(merged)
+    except Exception:
+        pass  # Non-fatal: JSON file is always the source of truth
+
     return merged
 
 
