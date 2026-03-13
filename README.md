@@ -804,14 +804,8 @@ agora-code agentify ./my-api --output ./workflows --llm-provider claude
 ~/.agora-code/
   memory.db             SQLite database (global — all projects)
     ├── sessions         Archived session records
-    │     session_id, goal, hypothesis, branch, commit_sha,
-    │     ticket, status, session_data (full JSON), project_id
     ├── learnings        Permanent findings
-    │     finding, evidence, confidence, tags, branch, files,
-    │     namespace (personal/team), project_id
     ├── file_changes     Per-file git diff history
-    │     file_path, diff_summary, diff_snippet, commit_sha,
-    │     session_id, branch, timestamp
     └── api_calls        HTTP interaction log (for serve/chat mode)
 ```
 
@@ -820,6 +814,77 @@ Override the DB path:
 ```bash
 export AGORA_CODE_DB=/path/to/custom/memory.db
 ```
+
+### sessions table schema
+
+The `sessions` table has two layers:
+
+**Top-level columns** — directly queryable:
+
+```
+session_id     TEXT PRIMARY KEY
+started_at     TEXT
+last_active    TEXT
+status         TEXT   ('in_progress' | 'completed' | 'abandoned')
+goal           TEXT
+hypothesis     TEXT
+current_action TEXT
+branch         TEXT
+commit_sha     TEXT
+ticket         TEXT
+project_id     TEXT
+tags           TEXT
+```
+
+**`session_data` JSON column** — full session blob, use `json_extract()`:
+
+Fields inside `session_data` that are NOT top-level columns: `context`, `files_changed`, `next_steps`, `blockers`, `discoveries`, `decisions`, `summary`.
+
+```sql
+-- Open the DB directly
+sqlite3 ~/.agora-code/memory.db
+
+-- List all sessions for a project
+.headers on
+.mode column
+SELECT session_id, started_at, last_active, status, goal, branch
+FROM sessions
+WHERE project_id = 'https://github.com/you/your-repo'
+ORDER BY last_active DESC;
+
+-- Inspect a single session including JSON-only fields
+SELECT
+    session_id,
+    started_at,
+    last_active,
+    status,
+    goal,
+    hypothesis,
+    branch,
+    json_extract(session_data, '$.context')       AS context,
+    json_extract(session_data, '$.current_action') AS current_action,
+    json_extract(session_data, '$.next_steps')    AS next_steps,
+    json_extract(session_data, '$.blockers')      AS blockers,
+    json_extract(session_data, '$.files_changed') AS files_changed
+FROM sessions
+WHERE session_id = '<your-session-id>';
+
+-- Join sessions with learnings
+SELECT
+    s.session_id,
+    s.goal,
+    s.status,
+    json_extract(s.session_data, '$.context') AS context,
+    l.finding,
+    l.confidence,
+    l.tags
+FROM sessions s
+LEFT JOIN learnings l ON s.session_id = l.session_id
+WHERE s.project_id = 'https://github.com/you/your-repo'
+ORDER BY s.last_active DESC;
+```
+
+> Note: `context`, `files_changed`, `next_steps`, `blockers`, and `discoveries` are stored inside the `session_data` JSON blob, not as top-level columns. Querying them directly as column names will throw `no such column`. Use `json_extract(session_data, '$.field_name')` instead.
 
 ---
 
