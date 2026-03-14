@@ -1,13 +1,20 @@
 {
     "hooks": {
-        "UserPromptSubmit": [
+        "SessionStart": [
             {
                 "matcher": "",
                 "hooks": [
                     {
                         "type": "command",
                         "command": "agora-code inject --quiet 2>/dev/null || true"
-                    },
+                    }
+                ]
+            }
+        ],
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [
                     {
                         "type": "command",
                         "command": ".claude/hooks/on-prompt.sh"
@@ -41,6 +48,28 @@
                 ]
             }
         ],
+        "PostToolUseFailure": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/on-tool-failure.sh"
+                    }
+                ]
+            }
+        ],
+        "SubagentStart": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/on-subagent.sh"
+                    }
+                ]
+            }
+        ],
         "PreCompact": [
             {
                 "matcher": "",
@@ -52,7 +81,7 @@
                 ]
             }
         ],
-        "Stop": [
+        "SessionEnd": [
             {
                 "matcher": "",
                 "hooks": [

@@ -996,17 +996,24 @@ def _install_claude_code_hooks(force: bool) -> None:
 
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- hooks.json (Claude Code valid event names) ---
+    # --- hooks.json ---
     hooks_json = f"""{{
     "hooks": {{
-        "UserPromptSubmit": [
+        "SessionStart": [
             {{
                 "matcher": "",
                 "hooks": [
                     {{
                         "type": "command",
                         "command": "{agora_bin} inject --quiet 2>/dev/null || true"
-                    }},
+                    }}
+                ]
+            }}
+        ],
+        "UserPromptSubmit": [
+            {{
+                "matcher": "",
+                "hooks": [
                     {{
                         "type": "command",
                         "command": ".claude/hooks/on-prompt.sh"
@@ -1040,6 +1047,28 @@ def _install_claude_code_hooks(force: bool) -> None:
                 ]
             }}
         ],
+        "PostToolUseFailure": [
+            {{
+                "matcher": "",
+                "hooks": [
+                    {{
+                        "type": "command",
+                        "command": ".claude/hooks/on-tool-failure.sh"
+                    }}
+                ]
+            }}
+        ],
+        "SubagentStart": [
+            {{
+                "matcher": "",
+                "hooks": [
+                    {{
+                        "type": "command",
+                        "command": ".claude/hooks/on-subagent.sh"
+                    }}
+                ]
+            }}
+        ],
         "PreCompact": [
             {{
                 "matcher": "",
@@ -1051,7 +1080,7 @@ def _install_claude_code_hooks(force: bool) -> None:
                 ]
             }}
         ],
-        "Stop": [
+        "SessionEnd": [
             {{
                 "matcher": "",
                 "hooks": [
@@ -1125,11 +1154,44 @@ fi
 exit 0
 """
 
+    on_subagent = f"""#!/bin/sh
+cat > /dev/null
+CONTEXT=$({agora_bin} inject --quiet --level summary 2>/dev/null)
+if [ -n "$CONTEXT" ]; then
+    printf '[agora-code: parent session context]\\n%s\\n' "$CONTEXT"
+fi
+exit 0
+"""
+
+    on_tool_failure = f"""#!/bin/sh
+INPUT=$(cat)
+ERROR_INFO=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    tool = d.get('tool_name', 'unknown')
+    err = d.get('error', '') or ''
+    ti = d.get('tool_input', {{}})
+    if isinstance(ti, str):
+        import json as j2; ti = j2.loads(ti)
+    path = ti.get('file_path') or ti.get('path') or ti.get('command') or ''
+    print(f'{{tool}} failed on {{path}}: {{err[:200]}}') if err else print('')
+except Exception:
+    print('')
+" 2>/dev/null)
+if [ -n "$ERROR_INFO" ]; then
+    {agora_bin} learn "$ERROR_INFO" --confidence hypothesis --tags tool-failure 2>/dev/null || true
+fi
+exit 0
+"""
+
     # Write files
     hooks_json_path.write_text(hooks_json, encoding="utf-8")
 
     scripts = {
         "on-prompt.sh": on_prompt,
+        "on-subagent.sh": on_subagent,
+        "on-tool-failure.sh": on_tool_failure,
         "pre-read.sh": pre_read,
     }
     for name, content in scripts.items():
