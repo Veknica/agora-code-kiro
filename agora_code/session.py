@@ -608,7 +608,8 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
                 parts.append("Pending: " + "; ".join(steps))
 
         # Top learnings for this project
-        learnings = store.search_learnings_keyword("", k=3, project_id=pid)
+        learnings_k = int(os.environ.get("AGORA_INJECT_LEARNINGS_K", "3"))
+        learnings = store.search_learnings_keyword("", k=learnings_k, project_id=pid)
         if learnings:
             parts.append("Stored learnings:")
             for lr in learnings:
@@ -616,6 +617,15 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
                     lr.get("confidence", "confirmed"), ""
                 )
                 parts.append(f"  {conf} {lr['finding']}")
+
+        # Recent file changes for this project
+        changes_k = int(os.environ.get("AGORA_INJECT_FILE_CHANGES_K", "5"))
+        changes = store.get_recent_file_changes_for_project(pid, limit=changes_k)
+        if changes:
+            parts.append("Recent file changes:")
+            for ch in changes:
+                ts = ch.get("timestamp", "")[:16]
+                parts.append(f"  {ts} {ch.get('diff_summary', '')}")
 
         return "\n".join(parts) if parts else None
     except Exception:

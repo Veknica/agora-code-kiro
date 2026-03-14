@@ -1,11 +1,20 @@
-
-
 {
     "version": 1,
     "hooks": {
         "sessionStart": [
             {
                 "command": ".cursor/hooks/session-start.sh"
+            }
+        ],
+        "preToolUse": [
+            {
+                "command": ".cursor/hooks/pre-read.sh",
+                "matcher": "Read"
+            }
+        ],
+        "postToolUse": [
+            {
+                "command": ".cursor/hooks/post-tool.sh"
             }
         ],
         "afterFileEdit": [
@@ -17,7 +26,11 @@
             {
                 "command": ".cursor/hooks/pre-compact.sh"
             }
+        ],
+        "sessionEnd": [
+            {
+                "command": ".cursor/hooks/session-end.sh"
+            }
         ]
     }
 }
-

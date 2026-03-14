@@ -2,27 +2,62 @@
     "hooks": {
         "SessionStart": [
             {
-                "type": "command",
-                "command": "agora-code inject --quiet || exit 0"
-            }
-        ],
-        "PreCompact": [
-            {
-                "type": "command",
-                "command": "agora-code checkpoint --quiet"
-            }
-        ],
-        "PostToolUse": [
-            {
-                "matcher": "Write|Edit|MultiEdit|write_file|replace|edit_file",
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "agora-code scan . --cache --quiet"
-                    },
+                        "command": "agora-code inject --quiet",
+                        "name": "agora-inject",
+                        "description": "Inject session context on startup"
+                    }
+                ]
+            }
+        ],
+        "BeforeTool": [
+            {
+                "matcher": "read_file",
+                "hooks": [
                     {
                         "type": "command",
-                        "command": "agora-code track-diff $GEMINI_TOOL_INPUT_FILE_PATH"
+                        "command": ".gemini/hooks/pre-read.sh",
+                        "name": "agora-summarize",
+                        "description": "Summarize large files before reading"
+                    }
+                ]
+            }
+        ],
+        "AfterTool": [
+            {
+                "matcher": "write_file|edit_file|replace_in_file",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".gemini/hooks/post-tool.sh",
+                        "name": "agora-track",
+                        "description": "Track file changes after edits"
+                    }
+                ]
+            }
+        ],
+        "PreCompress": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "agora-code checkpoint --quiet",
+                        "name": "agora-checkpoint",
+                        "description": "Save session state before compaction"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "agora-code checkpoint --quiet",
+                        "name": "agora-archive",
+                        "description": "Archive session on exit"
                     }
                 ]
             }

@@ -260,7 +260,7 @@ class MCPServer:
         self._restored_banner: Optional[str] = None
         try:
             from agora_code.session import load_session_if_recent
-            from agora_code.tldr import session_restored_banner
+            from agora_code.compress import session_restored_banner
             session = load_session_if_recent(max_age_hours=24)
             if session:
                 self._restored_banner = session_restored_banner(session)

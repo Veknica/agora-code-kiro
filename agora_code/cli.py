@@ -304,7 +304,7 @@ def chat(target, url, use_llm, level, auth_token, auth_type):
         sys.exit(1)
 
     from agora_code.scanner import scan as do_scan
-    from agora_code.tldr import compress_catalog
+    from agora_code.compress import compress_catalog
 
     _echo(f"🔍 Scanning {target!r} ({level} compression)...")
     catalog = asyncio.run(do_scan(target, use_llm=use_llm))
@@ -412,7 +412,8 @@ def status():
     agora-code status
     """
     from agora_code.session import load_session
-    from agora_code.tldr import compress_session, estimate_tokens
+    from agora_code.compress import compress_session, _session_age_str
+    from agora_code.summarizer import estimate_tokens
     from agora_code.vector_store import get_store
 
     session = load_session()
@@ -420,7 +421,6 @@ def status():
         _echo("📭 No active session. Start one with:")
         _echo("   agora-code checkpoint --goal \"What you're trying to do\"")
     else:
-        from agora_code.tldr import _session_age_str
         age = _session_age_str(session)
         started = session.get("started_at", "")[:19].replace("T", " ")
         last = session.get("last_active", "")[:19].replace("T", " ")
@@ -549,7 +549,7 @@ def inject(level, token_budget, raw, quiet):
         load_session_if_recent, load_session, update_session,
         _build_recalled_context,
     )
-    from agora_code.tldr import compress_session, auto_compress_session, session_restored_banner
+    from agora_code.compress import compress_session, auto_compress_session, session_restored_banner
 
     session = load_session_if_recent(max_age_hours=48) or load_session()
     if not session:
@@ -594,7 +594,7 @@ def restore(session_id):
     """
     from agora_code.vector_store import get_store
     from agora_code.session import save_session
-    from agora_code.tldr import compress_session
+    from agora_code.compress import compress_session
 
     vs = get_store()
 
@@ -779,15 +779,16 @@ def track_diff(file_path, committed):
 
     session = load_session()
     store = get_store()
-    from agora_code.session import _get_git_author
+    from agora_code.session import _get_git_author, _get_project_id
     store.save_file_change(
         file_path=file_path,
         diff_summary=summary,
-        diff_snippet=raw_diff[:2000],  # cap snippet at 2k chars
+        diff_snippet=raw_diff[:2000],
         commit_sha=_get_commit_sha(),
         session_id=session.get("session_id") if session else None,
         branch=_get_git_branch(),
-        agent_id=_get_git_author(),   # git config user.name <email>
+        agent_id=_get_git_author(),
+        project_id=_get_project_id(),
     )
     _echo(f"📌 Tracked: {file_path} — {summary}")
 
@@ -963,6 +964,65 @@ done
     _echo("   Fires on every commit — human or AI.")
     _echo("   Tracks: what changed, who committed, which branch, commit SHA.")
     _echo("   View history with: agora-code file-history <file>")
+
+
+# --------------------------------------------------------------------------- #
+#  summarize                                                                   #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.argument("file_path")
+@click.option("--max-tokens", default=500, help="Token budget for summary")
+@click.option("--json-output", "json_out", is_flag=True, default=False,
+              help="Output JSON for hook consumption")
+@click.option("--threshold", default=200, help="Line threshold — files below this pass through")
+def summarize(file_path, max_tokens, json_out, threshold):
+    """Summarize a file's structure for token-efficient context injection.
+
+    \b
+    Used by preToolUse hooks to intercept large file reads:
+      agora-code summarize agora_code/session.py
+      agora-code summarize package.json --json-output
+
+    Files under --threshold lines return empty (signal: let it through).
+    """
+    from agora_code.summarizer import summarize_file, FILE_SIZE_THRESHOLD
+
+    path = Path(file_path)
+    if not path.exists():
+        if json_out:
+            click.echo(json.dumps({"action": "allow", "reason": "file not found"}))
+        return
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        if json_out:
+            click.echo(json.dumps({"action": "allow", "reason": "unreadable"}))
+        return
+
+    summary = summarize_file(str(file_path), content, max_tokens=max_tokens)
+
+    if summary is None:
+        if json_out:
+            click.echo(json.dumps({"action": "allow", "reason": "below threshold"}))
+        else:
+            _echo(f"✅ {file_path}: {len(content.splitlines())} lines — below threshold, pass through")
+        return
+
+    if json_out:
+        click.echo(json.dumps({
+            "action": "summarize",
+            "summary": summary,
+            "original_lines": len(content.splitlines()),
+            "summary_tokens": len(summary) // 4,
+        }))
+    else:
+        original_tokens = len(content) // 4
+        summary_tokens = len(summary) // 4
+        reduction = round((1 - summary_tokens / original_tokens) * 100, 1) if original_tokens > 0 else 0
+        _echo(f"📊 {file_path}: {original_tokens} → {summary_tokens} tokens ({reduction}% reduction)\n")
+        click.echo(summary)
 
 
 # --------------------------------------------------------------------------- #

@@ -130,6 +130,16 @@ class VectorStore:
                 timestamp    TEXT NOT NULL
             )
         """)
+        # Safe migration: add project_id to file_changes
+        for col, defn in [("project_id", "TEXT")]:
+            try:
+                conn.execute(f"ALTER TABLE file_changes ADD COLUMN {col} {defn}")
+            except Exception:
+                pass
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_file_changes_project
+            ON file_changes(project_id, timestamp)
+        """)
 
         # ── Learnings ────────────────────────────────────────────────────────
         conn.execute("""
@@ -393,6 +403,7 @@ class VectorStore:
         session_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         branch: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> str:
         """Store a summarized git diff for a file. Returns record ID."""
         conn = self._conn_()
@@ -401,12 +412,28 @@ class VectorStore:
         conn.execute("""
             INSERT INTO file_changes
                 (id, file_path, diff_summary, diff_snippet, commit_sha,
-                 session_id, agent_id, branch, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 session_id, agent_id, branch, timestamp, project_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (fid, file_path, diff_summary, diff_snippet, commit_sha,
-              session_id, agent_id, branch, now))
+              session_id, agent_id, branch, now, project_id))
         conn.commit()
         return fid
+
+    def get_recent_file_changes_for_project(
+        self, project_id: str, limit: int = 10
+    ) -> List[Dict]:
+        """Return recent diff summaries for this project, newest first.
+        Queries file_changes.project_id directly — works even before
+        checkpoint has been called.
+        """
+        rows = self._conn_().execute("""
+            SELECT file_path, diff_summary, timestamp
+            FROM file_changes
+            WHERE project_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """, (project_id, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def get_file_history(self, file_path: str, limit: int = 20) -> List[Dict]:
         """Return summarized change history for a specific file, newest first."""

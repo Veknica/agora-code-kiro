@@ -11,6 +11,17 @@
                 ]
             }
         ],
+        "PreToolUse": [
+            {
+                "matcher": "Read",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/pre-read.sh"
+                    }
+                ]
+            }
+        ],
         "PreCompact": [
             {
                 "matcher": "",
@@ -33,6 +44,17 @@
                     {
                         "type": "command",
                         "command": "agora-code track-diff $CLAUDE_TOOL_INPUT_FILE_PATH"
+                    }
+                ]
+            }
+        ],
+        "SessionEnd": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "agora-code checkpoint --quiet"
                     }
                 ]
             }

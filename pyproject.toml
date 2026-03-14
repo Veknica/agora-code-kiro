@@ -28,6 +28,9 @@ gemini  = ["google-generativeai>=0.8"]
 # Agent LLM backend
 llm     = ["openai>=1.0"]
 
+# Accurate token counting (optional — falls back to word heuristic)
+tokens  = ["tiktoken>=0.7"]
+
 # Local embeddings — fully offline, no API key needed
 local   = ["sentence-transformers>=2.2", "torch>=2.0"]
 

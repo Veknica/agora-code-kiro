@@ -233,7 +233,7 @@ async def _handle_get_session_context(params: dict) -> str:
     from agora_code.session import (
         load_session, update_session, _build_recalled_context,
     )
-    from agora_code.tldr import session_restored_banner
+    from agora_code.compress import session_restored_banner
 
     session = load_session()
     if not session:
@@ -600,7 +600,7 @@ async def serve_memory() -> None:
     # Emit session banner on startup
     try:
         from agora_code.session import load_session_if_recent, _get_git_branch
-        from agora_code.tldr import session_restored_banner
+        from agora_code.compress import session_restored_banner
         session = load_session_if_recent(max_age_hours=48)
         if session:
             banner = session_restored_banner(session, token_budget=2000)

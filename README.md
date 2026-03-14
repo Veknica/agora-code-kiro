@@ -932,7 +932,9 @@ agora-code/
 │   ├── session.py          Session lifecycle, git helpers, DB recall, project_id
 │   ├── vector_store.py     SQLite + sqlite-vec + FTS5, project_id scoping
 │   ├── embeddings.py       OpenAI / Gemini / local sentence-transformers, LRU cache
-│   ├── tldr.py             Context compression (index/summary/detail/full)
+│   ├── summarizer.py       File content summarization (AST/regex/generic, token estimation)
+│   ├── compress.py         Route catalog + session state compression (index/summary/detail/full)
+│   ├── tldr.py             Backwards-compat shim → summarizer.py + compress.py
 │   ├── agent.py            MCP server for API routes
 │   ├── scanner.py          4-tier route discovery pipeline
 │   ├── workflows.py        Workflow detection + code generator
@@ -944,9 +946,13 @@ agora-code/
 │       └── regex.py        Tier 4: Regex fallback
 ├── .cursor/
 │   ├── hooks.json          Cursor hook config (version:1, camelCase event names)
-│   └── hooks/              Shell scripts (session-start.sh, after-file-edit.sh, pre-compact.sh)
-├── .claude/hooks.json      Claude Code hook config
-├── .gemini/settings.json   Gemini CLI hook config
+│   └── hooks/              Shell scripts (session-start, after-file-edit, pre-compact, pre-read, post-tool, session-end)
+├── .claude/
+│   ├── hooks.json          Claude Code hook config (SessionStart, PreToolUse, PostToolUse, PreCompact, SessionEnd)
+│   └── hooks/              Claude-specific hook scripts (pre-read.sh)
+├── .gemini/
+│   ├── settings.json       Gemini CLI hook config (SessionStart, BeforeTool, AfterTool, PreCompress, SessionEnd)
+│   └── hooks/              Gemini-specific hook scripts (pre-read.sh, post-tool.sh)
 ├── .github/hooks/          Copilot CLI hook config
 ├── SKILL.md                Agent tool-usage reference card
 ├── tests/                  186 tests — run with: pytest tests/
