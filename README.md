@@ -128,18 +128,17 @@ pip install git+https://github.com/thebnbrkr/agora-code
 
 # 2. Register the marketplace and install the plugin (user scope = all projects)
 claude plugin marketplace add thebnbrkr/agora-code
-claude plugin install agora-code@agora-code --scope user
+claude plugin install agora-code@thebnbrkr/agora-code --scope user
 ```
 
 After this, every Claude Code session automatically:
 - Runs `agora-code inject` at startup to load your last session state
 - Searches past learnings on every prompt and injects relevant ones as context
+- Indexes symbols and diffs on every file read/edit
 - Checkpoints before context compaction so nothing is lost
 - Digests the conversation on stop to extract goals and findings
 
-The plugin ships: a `SessionStart` hook, a `PreCompact` hook, a `PostToolUse` hook for file tracking, and a skill that teaches Claude the full tool reference.
-
-> **Note:** For the deeper per-prompt recall and conversation digest features (the `UserPromptSubmit` and `Stop` hooks), use the manual Claude Code setup below — those hooks are not yet bundled in the plugin.
+The plugin ships all hooks: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `SubagentStart`, `PreCompact`, `PostCompact`, and `Stop`.
 
 ---
 
