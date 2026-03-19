@@ -1,7 +1,7 @@
 {
   "hooks": {
     "SessionStart": [
-      {"matcher": "", "hooks": [{"type": "command", "command": "which agora-code >/dev/null 2>&1 || pip install git+https://github.com/thebnbrkr/agora-code.git --quiet 2>/dev/null || true"},{"type": "command", "command": "agora-code inject --quiet 2>/dev/null || true"}]}
+      {"matcher": "", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh"}]}
     ],
     "UserPromptSubmit": [
       {"matcher": "", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/on-prompt.sh"}]}
