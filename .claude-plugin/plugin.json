@@ -1,12 +1,11 @@
 {
   "name": "agora-code",
+  "description": "Persistent memory and symbol indexing for Claude Code — inject session context, summarize large files, recall past findings across sessions.",
   "version": "0.1.0",
-  "description": "Persistent memory and API discovery for Claude Code — auto-injects session context, tracks file changes, and checkpoints before compaction.",
   "author": {
-    "name": "agora-code contributors"
+    "name": "thebnbrkr"
   },
-  "keywords": ["memory", "session", "context", "api-discovery", "persistence"],
-  "scripts": {
-    "postInstall": "sh setup.sh"
-  }
+  "homepage": "https://github.com/thebnbrkr/agora-code",
+  "repository": "https://github.com/thebnbrkr/agora-code",
+  "license": "MIT"
 }

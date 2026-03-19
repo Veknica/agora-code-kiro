@@ -3,6 +3,19 @@ name: agora-code
 description: Use agora-code memory tools — inject session context, learn findings, recall past work, checkpoint progress, and summarize large files
 ---
 
+## First-time setup (required)
+
+agora-code needs its CLI installed and hooks wired up. Run this once per project:
+
+```bash
+pip install agora-code
+agora-code install-hooks --claude-code
+```
+
+Then restart Claude Code. After that, everything below is automatic.
+
+---
+
 agora-code gives you persistent memory across sessions. Hooks handle most things automatically, but **you must follow the rules below** — they are not optional.
 
 ## Your rules (always follow these)
