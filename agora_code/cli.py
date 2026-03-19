@@ -912,6 +912,43 @@ def learn(finding, endpoint, api, evidence, confidence, tags):
 
 
 # --------------------------------------------------------------------------- #
+#  remove                                                                      #
+# --------------------------------------------------------------------------- #
+
+@main.command()
+@click.argument("learning_id")
+def remove(learning_id):
+    """Remove a learning by ID — scoped to the current repo.
+
+    \b
+    agora-code remove abc12345
+    """
+    from agora_code.vector_store import get_store
+    from agora_code.session import _get_project_id
+
+    project_id = _get_project_id()
+    vs = get_store()
+    conn = vs._conn_()
+
+    row = conn.execute(
+        "SELECT id, finding, project_id FROM learnings WHERE id LIKE ?",
+        (f"{learning_id}%",)
+    ).fetchone()
+
+    if not row:
+        _echo(f"❌ No learning found matching '{learning_id}'.")
+        return
+
+    if row["project_id"] != project_id:
+        _echo(f"❌ Learning '{row['id'][:8]}' belongs to a different repo ({row['project_id']}) — cannot remove.")
+        return
+
+    conn.execute("DELETE FROM learnings WHERE id = ?", (row["id"],))
+    conn.commit()
+    _echo(f"✅ Removed learning: {row['finding'][:80]}")
+
+
+# --------------------------------------------------------------------------- #
 #  recall                                                                      #
 # --------------------------------------------------------------------------- #
 
