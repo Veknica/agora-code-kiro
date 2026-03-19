@@ -8,7 +8,7 @@ description: Use agora-code memory tools — inject session context, learn findi
 agora-code needs its CLI installed and hooks wired up. Run this once per project:
 
 ```bash
-pip install agora-code
+pip install git+https://github.com/thebnbrkr/agora-code.git
 agora-code install-hooks --claude-code
 ```
 
