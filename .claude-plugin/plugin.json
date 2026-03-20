@@ -1,7 +1,7 @@
 {
   "name": "agora-code",
   "description": "Persistent memory + AST summarization for Claude Code — tree-sitter structural analysis of large files (90%+ token reduction), session context injection, and cross-session recall.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "thebnbrkr"
   },
