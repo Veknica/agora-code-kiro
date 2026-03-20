@@ -29,7 +29,7 @@ agora-code status -p     # scoped to this repo only
 ### Manual install (pip)
 
 ```bash
-pip install git+https://github.com/thebnbrkr/agora-code
+pip install git+https://github.com/thebnbrkr/agora-code.git
 ```
 
 Then run once inside any project and restart Claude Code:
