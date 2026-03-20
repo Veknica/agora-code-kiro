@@ -35,7 +35,7 @@ llm     = ["openai>=1.0"]
 
 # Vector similarity search in SQLite (semantic recall, learning search)
 # Falls back to FTS5 keyword search when not installed.
-vec     = ["sqlite-vec>=0.1"]
+vec     = ["sqlite-vec>=0.1", "pysqlite3-binary>=0.5; sys_platform != 'linux'"]
 
 # Local embeddings — fully offline, no API key needed
 # Uses bge-small-en-v1.5 by default (~130MB). Set LOCAL_EMBEDDING_MODEL to override.
