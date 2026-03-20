@@ -1138,85 +1138,54 @@ def _track_diff_one(file_path: str, committed: bool) -> None:
 
 def _llm_change_note(diff: str, file_path: str, symbols: str = "") -> Optional[str]:
     """
-    Call OpenAI (gpt-4o-mini) to generate a 1-2 sentence change note.
-    Returns None if OpenAI is unavailable or call fails — caller falls back to regex.
+    Generate a 1-2 sentence change note using the configured LLM provider.
+    Uses LLM_PROVIDER / ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY (auto-detect).
+    Returns None if no provider available — caller falls back to regex.
     """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return None
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        from agora_code.extractors.llm import _detect_provider
+        provider, model = _detect_provider()
+        if not provider:
+            return None
+
         symbol_hint = f"\nKnown symbols in this file: {symbols}" if symbols else ""
         prompt = (
             f"You are summarizing a code change for a developer memory system.\n"
             f"File: {file_path}{symbol_hint}\n\n"
             f"Diff:\n{diff[:3000]}\n\n"
-            f"Write exactly 1-2 sentences describing: what changed, why (if inferrable "
-            f"from the diff), and what it connects to (callers or callees if visible). "
-            f"Format: 'changed <symbol> in <file> to <what> [— connects to <other>]'. "
+            f"Write exactly 1-2 sentences: what changed, why (if inferrable), "
+            f"and what it connects to (callers/callees if visible). "
+            f"Format: 'changed <symbol> to <what> [— connects to <other>]'. "
             f"Be specific. No preamble."
         )
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=120,
-            temperature=0.2,
-        )
-        note = resp.choices[0].message.content.strip()
+
+        import asyncio
+        if provider in ("claude", "anthropic"):
+            import anthropic
+            client = anthropic.Anthropic()
+            resp = client.messages.create(
+                model=model, max_tokens=120,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            note = resp.content[0].text.strip() if resp.content else ""
+        elif provider == "openai":
+            from openai import OpenAI
+            client = OpenAI()
+            resp = client.chat.completions.create(
+                model=model, max_tokens=120, temperature=0.2,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            note = resp.choices[0].message.content.strip()
+        elif provider == "gemini":
+            import google.generativeai as genai
+            m = genai.GenerativeModel(model)
+            resp = m.generate_content(prompt)
+            note = resp.text.strip() if resp.text else ""
+        else:
+            return None
         return note if note else None
     except Exception:
         return None
-
-
-def _llm_derive_learnings(
-    commit_sha: str,
-    commit_message: str,
-    file_notes: list[dict],
-) -> list[dict]:
-    """
-    Call OpenAI to derive 1-3 learnings from a commit.
-    Each learning: {"finding": str, "tags": [str], "type": str, "evidence": str}
-    Returns [] on failure.
-    """
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return []
-    try:
-        from openai import OpenAI
-        import json as _json
-        client = OpenAI(api_key=api_key)
-
-        notes_text = "\n".join(
-            f"  {n['file_path']}: {n['diff_summary']}" for n in file_notes
-        )
-        prompt = (
-            f"You are building a persistent memory for a developer.\n"
-            f"Commit {commit_sha}: \"{commit_message}\"\n\n"
-            f"Files changed:\n{notes_text}\n\n"
-            f"Derive 1-3 concise learnings a future AI agent should know about this codebase. "
-            f"Focus on: structural facts (what calls what), design decisions (why something was done), "
-            f"or gotchas (what to watch out for). NOT task notes — permanent project intelligence.\n\n"
-            f"Respond with JSON array only:\n"
-            f'[{{"finding": "...", "tags": ["tag1"], "type": "finding|decision", "evidence": "..."}}]'
-        )
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=400,
-            temperature=0.3,
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content.strip()
-        parsed = _json.loads(raw)
-        # Handle both {"learnings": [...]} and [...]
-        if isinstance(parsed, dict):
-            items = parsed.get("learnings") or parsed.get("items") or list(parsed.values())[0]
-        else:
-            items = parsed
-        return [i for i in items if isinstance(i, dict) and i.get("finding")]
-    except Exception:
-        return []
 
 
 def _summarize_diff(diff: str, file_path: str) -> str:
@@ -1418,39 +1387,50 @@ def learn_from_commit(sha, quiet):
         else:
             file_notes.append({"file_path": fp, "diff_summary": f"modified {fp}"})
 
-    # Derive learnings via LLM
-    learnings = _llm_derive_learnings(sha, commit_message, file_notes)
-
-    # Fallback: store commit message itself as a raw finding
-    if not learnings:
-        learnings = [{
-            "finding": f"[{sha}] {commit_message}",
-            "tags": ["commit"],
-            "type": "finding",
-            "evidence": f"commit message for {sha}",
-        }]
-
+    # Build learnings directly from change notes — no external LLM.
+    # Each file's change note IS the learning. Commit message is the context/header.
+    # One learning per file that has a real change note; one summary learning if none exist.
     stored = 0
-    for item in learnings:
-        tags = item.get("tags") or []
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",")]
+    for fn in file_notes:
+        note = fn.get("diff_summary", "").strip()
+        # Strip any leading "filepath: " prefix stored by _summarize_diff
+        import re as _re
+        clean = _re.sub(r'^[^\s:]+[/\\][^\s:]*:\s*', '', note)
+        if not clean or clean.startswith("modified ") and len(clean) < 20:
+            continue  # skip uninformative notes
+        finding = f"{clean}  [{fn['file_path'].split('/')[-1]}]"
         store.store_learning(
-            finding=item["finding"],
-            evidence=item.get("evidence", f"derived from commit {sha}"),
+            finding=finding,
+            evidence=f"commit {sha}: {commit_message[:80]}",
             confidence="confirmed",
-            tags=tags,
-            type=item.get("type", "finding"),
+            tags=["commit", "change-note"],
+            type="finding",
             branch=branch,
-            files=files,
+            files=[fn["file_path"]],
             project_id=project_id,
             session_id=session_id,
             commit_sha=sha,
         )
         stored += 1
 
+    # If no file notes had content, store the commit message as a minimal signal
+    if stored == 0:
+        store.store_learning(
+            finding=commit_message.splitlines()[0][:120],
+            evidence=f"commit {sha} — no change notes available",
+            confidence="likely",
+            tags=["commit"],
+            type="finding",
+            branch=branch,
+            files=files,
+            project_id=project_id,
+            session_id=session_id,
+            commit_sha=sha,
+        )
+        stored = 1
+
     if not quiet:
-        _echo(f"✅ {stored} learning(s) stored for commit {sha}: {commit_message[:60]}")
+        _echo(f"✅ {stored} learning(s) stored for commit {sha}: {commit_message.splitlines()[0][:60]}")
 
 
 # --------------------------------------------------------------------------- #
