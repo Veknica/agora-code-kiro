@@ -1,0 +1,30 @@
+#!/bin/sh
+# Cline UserPromptSubmit hook — recall relevant learnings for this prompt.
+# Output: {"cancel": false, "contextModification": "..."}
+
+INPUT=$(cat)
+
+PROMPT=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    print(d.get('userPromptSubmit', {}).get('prompt', ''))
+except Exception:
+    print('')
+" 2>/dev/null)
+
+if [ -z "$PROMPT" ]; then
+    printf '{"cancel":false}\n'
+    exit 0
+fi
+
+# Recall relevant learnings
+LEARNINGS=$(agora-code recall "$PROMPT" --limit 2 2>/dev/null)
+
+if [ -n "$LEARNINGS" ] && ! printf '%s' "$LEARNINGS" | grep -q "No learnings"; then
+    CONTEXT=$(printf '[agora-code: relevant learnings]\n%s' "$LEARNINGS")
+    escaped=$(printf '%s' "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+    printf '{"cancel":false,"contextModification":%s}\n' "$escaped"
+else
+    printf '{"cancel":false}\n'
+fi

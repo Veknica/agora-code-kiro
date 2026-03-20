@@ -1,0 +1,28 @@
+#!/bin/sh
+# Cline TaskStart hook — inject session context when a new task begins.
+# Output: {"cancel": false, "contextModification": "..."}
+
+INPUT=$(cat)
+CONTEXT=$(agora-code inject --quiet 2>/dev/null)
+
+# Auto-set goal from the task description
+TASK=$(printf '%s' "$INPUT" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    print(d.get('taskStart', {}).get('task', ''))
+except Exception:
+    print('')
+" 2>/dev/null)
+
+if [ -n "$TASK" ]; then
+    SHORT=$(printf '%s' "$TASK" | cut -c1-200)
+    agora-code checkpoint --goal "$SHORT" --quiet 2>/dev/null || true
+fi
+
+if [ -n "$CONTEXT" ]; then
+    escaped=$(printf '%s' "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+    printf '{"cancel":false,"contextModification":%s}\n' "$escaped"
+else
+    printf '{"cancel":false}\n'
+fi

@@ -1,0 +1,39 @@
+#!/bin/sh
+# Cline TaskComplete hook — checkpoint session state and store a conversation summary.
+# Output: {"cancel": false}
+
+INPUT=$(cat)
+
+# Checkpoint first
+agora-code checkpoint --quiet 2>/dev/null || true
+
+# Extract task as goal and store a learning
+python3 - << 'PYEOF'
+import sys, json, subprocess, shutil, re
+
+try:
+    data = json.loads(open('/dev/stdin').read()) if False else json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+
+task = data.get('taskComplete', {}).get('task', '').strip()
+
+FILLER = re.compile(r'^(hi|hey|hello|ok|okay|yes|no|sure|thanks|bye|lol|cool|great)\b', re.I)
+
+def is_substantive(t):
+    return len(t) > 30 and not FILLER.match(t) and not t.startswith('agora-code ')
+
+if not is_substantive(task):
+    sys.exit(0)
+
+agora = shutil.which('agora-code') or 'agora-code'
+first_line = task.split('\n')[0][:150].strip()
+summary = f"Session goal: {first_line}"
+
+subprocess.run(
+    [agora, 'learn', summary, '--confidence', 'confirmed', '--tags', 'conversation-summary'],
+    capture_output=True, timeout=10
+)
+PYEOF
+
+printf '{"cancel":false}\n'

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Cline TaskCancel hook — save session state when a task is cancelled.
+# Output: {"cancel": false}
+
+agora-code checkpoint --quiet 2>/dev/null || true
+printf '{"cancel":false}\n'

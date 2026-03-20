@@ -1,0 +1,6 @@
+#!/bin/sh
+# Cline PreCompact hook — save session state before context is truncated.
+# Output: {"cancel": false}
+
+agora-code checkpoint --quiet 2>/dev/null || true
+printf '{"cancel":false}\n'

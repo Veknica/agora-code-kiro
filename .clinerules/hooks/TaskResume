@@ -1,0 +1,13 @@
+#!/bin/sh
+# Cline TaskResume hook — re-inject session context when resuming an interrupted task.
+# Output: {"cancel": false, "contextModification": "..."}
+
+INPUT=$(cat)
+CONTEXT=$(agora-code inject --quiet 2>/dev/null)
+
+if [ -n "$CONTEXT" ]; then
+    escaped=$(printf '%s' "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+    printf '{"cancel":false,"contextModification":%s}\n' "$escaped"
+else
+    printf '{"cancel":false}\n'
+fi

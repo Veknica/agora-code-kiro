@@ -1,0 +1,83 @@
+#!/bin/sh
+# Cline PostToolUse hook — track file changes, index symbols, detect git commits.
+# Fires after every tool execution.
+# Output: {"cancel": false}
+
+INPUT=$(cat)
+
+python3 - << 'PYEOF'
+import sys, json, os, subprocess, shutil
+
+try:
+    data = json.loads(open('/dev/stdin').read()) if False else json.loads(sys.stdin.read())
+except Exception:
+    print('{"cancel":false}')
+    sys.exit(0)
+
+ptu = data.get('postToolUse', {})
+tool = ptu.get('tool', '')
+params = ptu.get('parameters', {})
+success = ptu.get('success', True)
+
+agora = shutil.which('agora-code') or 'agora-code'
+
+def run(cmd):
+    try:
+        subprocess.run(cmd, capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+# ── read_file → index symbols ─────────────────────────────────────────────────
+if tool == 'read_file':
+    path = params.get('path', '')
+    if path and os.path.isfile(path):
+        run([agora, 'index', path])
+
+# ── write_to_file / replace_in_file → track diff + re-index ──────────────────
+elif tool in ('write_to_file', 'replace_in_file'):
+    path = params.get('path', '')
+    if path and os.path.isfile(path):
+        run([agora, 'track-diff', path])
+        run([agora, 'index', path])
+
+# ── execute_command → detect git commit ───────────────────────────────────────
+elif tool == 'execute_command':
+    command = params.get('command', '')
+    if 'git commit' in command and success:
+        try:
+            sha_result = subprocess.run(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                capture_output=True, text=True, timeout=5
+            )
+            commit_sha = sha_result.stdout.strip() if sha_result.returncode == 0 else ''
+
+            files_result = subprocess.run(
+                ['git', 'diff-tree', '--no-commit-id', '-r', '--name-only', 'HEAD'],
+                capture_output=True, text=True, timeout=5
+            )
+            committed_files = [f for f in files_result.stdout.strip().splitlines() if f]
+
+            if committed_files and commit_sha:
+                from agora_code.indexer import tag_commit
+                from agora_code.session import _get_project_id, _get_git_branch
+                tag_commit(commit_sha, committed_files,
+                           project_id=_get_project_id(),
+                           branch=_get_git_branch())
+
+            if commit_sha:
+                run([agora, 'learn-from-commit', commit_sha, '--quiet'])
+        except Exception:
+            pass
+
+# ── search_files → index matched files ───────────────────────────────────────
+elif tool == 'search_files':
+    result_text = ptu.get('result', '')
+    import re
+    CODE_EXTS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java',
+                 '.c', '.cpp', '.cs', '.rb', '.swift', '.kt', '.sh'}
+    for fp in re.findall(r'[\w./\-]+\.\w+', result_text):
+        if os.path.splitext(fp)[1] in CODE_EXTS and os.path.isfile(fp):
+            run([agora, 'index', fp])
+
+print('{"cancel":false}')
+PYEOF
