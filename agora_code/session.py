@@ -640,27 +640,7 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
                 if finding:
                     parts.append(f"LAST CHECKPOINT\n  {finding[:200]}")
 
-        # ── 2. Recent non-checkpoint learnings (decisions, findings, blockers) ─
-        learnings_k = int(os.environ.get("AGORA_INJECT_LEARNINGS_K", "4"))
-        learnings = store._conn_().execute("""
-            SELECT finding, type, confidence FROM learnings
-            WHERE project_id = ?
-              AND (tags NOT LIKE '%checkpoint%' OR tags IS NULL)
-              AND (tags NOT LIKE '%conversation-summary%')
-              AND (tags NOT LIKE '%tool-failure%')
-            ORDER BY timestamp DESC LIMIT ?
-        """, (pid, learnings_k)).fetchall()
-
-        if learnings:
-            TYPE_ICON = {"decision": "→", "blocker": "!", "next_step": "»", "finding": "·"}
-            section = ["LEARNINGS"]
-            for lr in learnings:
-                icon = TYPE_ICON.get(lr[1] or "finding", "·")
-                conf = {"confirmed": "", "likely": "~", "hypothesis": "?"}.get(lr[2] or "confirmed", "")
-                section.append(f"  {icon}{conf} {lr[0][:120]}")
-            parts.append("\n".join(section))
-
-        # ── 3. Git log (always live — no storage needed) ─────────────────────
+        # ── 2. Git log (live) — get recent commit SHAs for learning lookup ───
         def _git(cmd):
             try:
                 r = _sp.run(cmd, capture_output=True, text=True, timeout=5)
@@ -668,16 +648,103 @@ def _build_recalled_context(project_id: Optional[str] = None) -> Optional[str]:
             except Exception:
                 return ""
 
-        git_log = _git(["git", "log", "--oneline", "-6"])
-        if git_log:
-            parts.append(f"GIT LOG\n" + "\n".join(f"  {l}" for l in git_log.splitlines()))
+        # Last 3 commits on current branch + last 1 on main/master for cross-branch context
+        branch_log = _git(["git", "log", "--format=%h|%s", "-3"])
+        main_log = _git(["git", "log", "main", "--format=%h|%s", "-1"]) or \
+                   _git(["git", "log", "master", "--format=%h|%s", "-1"])
 
-        # ── 4. Uncommitted files ──────────────────────────────────────────────
+        branch_shas = [l.split("|")[0] for l in branch_log.splitlines() if "|" in l]
+        main_sha = main_log.split("|")[0] if "|" in main_log else ""
+        all_shas = list(dict.fromkeys(branch_shas + ([main_sha] if main_sha else [])))
+
+        git_log = _git(["git", "log", "--oneline", "-6"])
+
+        # ── 3. Commit-based learnings (commit-relevant, not just recency) ────
+        learnings_k = int(os.environ.get("AGORA_INJECT_LEARNINGS_K", "6"))
+        TYPE_ICON = {"decision": "→", "blocker": "!", "next_step": "»", "finding": "·"}
+
+        commit_learnings = store.get_learnings_for_commits(
+            all_shas, project_id=pid, limit=learnings_k
+        ) if all_shas else []
+
+        # Fill remaining budget with recent non-checkpoint learnings not already included
+        already_ids = {l["id"] for l in commit_learnings}
+        remaining = learnings_k - len(commit_learnings)
+        fallback_learnings = []
+        if remaining > 0:
+            rows = store._conn_().execute("""
+                SELECT id, finding, type, confidence FROM learnings
+                WHERE project_id = ?
+                  AND (tags NOT LIKE '%checkpoint%' OR tags IS NULL)
+                  AND (tags NOT LIKE '%conversation-summary%')
+                  AND (tags NOT LIKE '%tool-failure%')
+                ORDER BY timestamp DESC LIMIT ?
+            """, (pid, remaining * 2)).fetchall()
+            for row in rows:
+                if row[0] not in already_ids:
+                    fallback_learnings.append({"id": row[0], "finding": row[1],
+                                               "type": row[2], "confidence": row[3]})
+                if len(fallback_learnings) >= remaining:
+                    break
+
+        all_learnings = commit_learnings + fallback_learnings
+        if all_learnings:
+            section = ["LEARNINGS"]
+            for lr in all_learnings:
+                icon = TYPE_ICON.get(lr.get("type") or "finding", "·")
+                conf = {"confirmed": "", "likely": "~", "hypothesis": "?"}.get(
+                    lr.get("confidence") or "confirmed", ""
+                )
+                sha_tag = f" [{lr['commit_sha'][:7]}]" if lr.get("commit_sha") else ""
+                section.append(f"  {icon}{conf}{sha_tag} {(lr.get('finding') or '')[:120]}")
+            parts.append("\n".join(section))
+
+            # Mark these learnings as injected
+            try:
+                store.mark_learnings_injected([l["id"] for l in all_learnings if l.get("id")])
+            except Exception:
+                pass
+
+        # ── 4. Uncommitted work — change notes + dirty files ─────────────────
         uncommitted = _git(["git", "diff", "--name-only", "HEAD"]).splitlines()
         staged = _git(["git", "diff", "--cached", "--name-only"]).splitlines()
         dirty = list(dict.fromkeys(uncommitted + staged))[:8]
+
         if dirty:
-            parts.append("UNCOMMITTED\n  " + ", ".join(dirty))
+            # Check if we have LLM change notes for these files
+            uncommitted_notes = store.get_uncommitted_file_changes(
+                project_id=pid, branch=branch, limit=20
+            )
+            noted_files = {n["file_path"]: n["diff_summary"] for n in uncommitted_notes}
+            # Also match by basename for robustness
+            noted_base = {n["file_path"].split("/")[-1]: n["diff_summary"] for n in uncommitted_notes}
+
+            has_notes = any(
+                fp in noted_files or fp.split("/")[-1] in noted_base
+                for fp in dirty
+            )
+
+            if has_notes:
+                section = ["UNCOMMITTED WORK"]
+                for fp in dirty[:6]:
+                    note = noted_files.get(fp) or noted_base.get(fp.split("/")[-1], "")
+                    if note:
+                        # Strip leading "filepath: " prefix that _summarize_diff adds
+                        # Note may use absolute path, relative path, or basename
+                        clean_note = note
+                        import re as _re
+                        clean_note = _re.sub(r'^[^\s:]+[/\\][^\s:]*:\s*', '', clean_note, count=1)
+                        section.append(f"  {fp}")
+                        section.append(f"    {clean_note[:120]}")
+                    else:
+                        section.append(f"  {fp}  (no change note yet)")
+                parts.append("\n".join(section))
+            else:
+                parts.append("UNCOMMITTED\n  " + ", ".join(dirty))
+
+        # ── 4b. Git log — after learnings/uncommitted ────────────────────────
+        if git_log:
+            parts.append("GIT LOG\n" + "\n".join(f"  {l}" for l in git_log.splitlines()))
 
         # ── 5. Symbol index for recently touched files ────────────────────────
         if dirty:
