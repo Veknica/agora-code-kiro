@@ -2,13 +2,13 @@
   "version": "1.0.0",
   "enabled": true,
   "name": "agora: auto checkpoint",
-  "description": "Save session checkpoint after every agent turn",
+  "description": "Save session checkpoint after every agent turn (runs after agora-summarize-interaction)",
   "when": {
     "type": "agentStop"
   },
   "then": {
     "type": "runCommand",
-    "command": "agora-code kiro-sync --quiet 2>/dev/null || agora-code checkpoint --quiet 2>/dev/null || true",
+    "command": "agora-code checkpoint --quiet 2>/dev/null || true",
     "timeout": 10
   }
 }

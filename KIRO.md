@@ -38,7 +38,7 @@ Create `.kiro/settings/mcp.json` in your project root:
 }
 ```
 
-> If `agora-code` isn't on your PATH, use the full path to the binary (e.g. `/Library/Frameworks/Python.framework/Versions/3.10/bin/agora-code`).
+> If `agora-code` isn't on your PATH, run `which agora-code` to find it and use that full path in the config.
 
 ### 3. Add the steering document
 

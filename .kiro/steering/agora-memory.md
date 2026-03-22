@@ -4,60 +4,58 @@ inclusion: always
 
 # Persistent Memory via agora-memory MCP
 
-You have access to the `agora-memory` MCP server for persistent memory across sessions. The shell hooks handle session inject and checkpointing automatically — you only need to call MCP tools for deeper work.
+You have access to the `agora-memory` MCP server. Most memory work is automatic via hooks — you only call MCP tools for deeper work.
 
-## What happens automatically (shell hooks, 0 credits)
+## What happens automatically
 
-- **Every prompt**: `agora-code inject` runs and prepends LEARNINGS + last session context to your input
-- **Every agent stop**: `agora-code kiro-sync` parses the session, stores a compact summary as a learning, saves a checkpoint with the last goal
-- **Spec task start/end**: inject and checkpoint fire automatically
+| Event | Hook | Cost |
+|---|---|---|
+| Every prompt | `agora-code inject` runs — LEARNINGS + last session context injected | 0 credits |
+| Every agent stop | `agora-a-summarize-interaction` fires first → you call `store_learning` with one sentence. Then `agora-z-checkpoint` runs the shell checkpoint. Always in this order. | small + free |
+| Before `readCode` / `readFile` / `readMultipleFiles` | You call `summarize_file` then `read_file_range` | small |
+| After `fsWrite` / `fsAppend` / `strReplace` / `editCode` | You call `index_file` | small |
+| After `grepSearch` | You call `log_search` + `index_file` for matched files | small |
+| Spec task start/end | inject and checkpoint fire | 0 credits |
 
 ## When to call MCP tools manually
 
 | Situation | Tool |
 |---|---|
 | Need full structured session detail | `get_session_context` |
-| Completed a meaningful step mid-session | `save_checkpoint` |
-| Discovered something non-obvious | `store_learning` |
+| Completed a meaningful step | `save_checkpoint` |
+| Found something non-obvious | `store_learning` |
 | Starting a task — check if solved before | `recall_learnings` |
-| Session fully done | `complete_session` |
-| About to read a large file | `summarize_file` → then `read_file_range` |
-| Need a specific line range | `read_file_range` |
-| Just edited a file, want symbols searchable | `index_file` |
+| Session done | `complete_session` |
+| Read a specific line range from a file | `read_file_range` (start_line, end_line) |
 | Save a finding for the whole team | `store_team_learning` |
-| Search team-wide knowledge | `recall_team` |
+| Search team knowledge | `recall_team` |
 
 ## Rules
 
-1. **Don't call `get_session_context` on every prompt** — inject already loads context via the shell hook. Only call it when you need the full structured detail (hypothesis, next steps, files changed).
+1. **Don't call `get_session_context` on every prompt** — inject already loaded it. Only call it when you need full detail (hypothesis, next steps, files changed).
 
-2. **Before reading any file over ~100 lines**, call `summarize_file` to get the AST outline with function names and line numbers. Then use `read_file_range` for just the section you need. Saves 90%+ tokens.
+2. **Before reading any file**, call `summarize_file` first. Then `read_file_range` for just the section you need. Saves 90%+ tokens on large files.
 
-3. **Call `save_checkpoint`** after meaningful steps — bug fixed, feature added, decision made. Include `goal`, `action`, `files_changed`.
+3. **After every agent stop**, `agora-a-summarize-interaction` fires first (alphabetically before `agora-z-checkpoint`). Write one sentence summarizing what was done, call `store_learning` with it, then stop. The checkpoint shell command runs automatically after. Do not call any other tools in response to the summarize hook.
 
-4. **Call `store_learning`** for non-obvious discoveries — gotchas, API quirks, architectural constraints. These are searchable in all future sessions.
+4. **Call `store_learning`** any time you discover something non-obvious mid-task. Don't wait for the hook.
 
-5. **Call `recall_learnings`** before starting a new task to check if it's been done before.
-
-6. **Call `complete_session`** when the user says they're done.
+5. **Call `recall_learnings`** before starting a task to check if it's been done before.
 
 ## Example flow
 
 ```
-Session start (inject already ran):
-  → Only call get_session_context() if you need full structured detail
+Session start:
+  inject runs automatically → LEARNINGS from past sessions injected
 
-Before new task:
-  → recall_learnings("auth token")   # solved before?
+User asks something → you answer
+  Agent stops → checkpoint saves (shell, free)
+             → you write: "Explained SQLite overflow: fillInCell() chains
+               pages via 4-byte pointers when payload > maxLocal" → store_learning
 
-Reading a large file:
-  → summarize_file("src/auth.py")    # get outline
-  → read_file_range("src/auth.py", 45, 90)  # read just what's needed
+Next question same session → same cycle
 
-After fixing a bug:
-  → store_learning("JWT tokens expire in 15min, refresh is /auth/refresh")
-  → save_checkpoint(goal="fix auth", action="fixed token expiry", files_changed=["auth.py"])
-
-Session end:
-  → complete_session(summary="Fixed auth + added retry logic")
+New session next day:
+  inject runs → that summary appears in LEARNINGS
+  Feels like continuation — no full chat replay, ~200 tokens not 10k
 ```

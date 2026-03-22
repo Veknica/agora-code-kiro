@@ -10,5 +10,5 @@
     "type": "runCommand",
     "command": "agora-code inject --quiet 2>/dev/null || true",
     "timeout": 10
-  },
+  }
 }
