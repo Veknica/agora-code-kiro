@@ -46,7 +46,7 @@ Copy `.kiro/steering/agora-memory.md` from this repo into your project. This tel
 
 ### 4. Add the hooks
 
-Copy the `.kiro/hooks/` folder from this repo into your project. These 11 hooks automate everything:
+Copy the `.kiro/hooks/` folder from this repo into your project. **13 hooks** ship in `.kiro/hooks/` (session inject, checkpoint, spec tasks, pre/post read/write/grep, index-on-save, interaction summary). For a full mapping to Kiro trigger types, tool matching (`read` / `write` / `@mcp`, etc.), and improvement ideas, see **`docs/KIRO_HOOKS.md`**. For **design notes, insights, backlog, and what docs to add next**, see **`docs/KIRO_AGORA_INSIGHTS_AND_PLAN.md`**. For a **codebase audit, Kiro doc gaps, and drift/misuse risks**, see **`docs/KIRO_CODEBASE_AUDIT_AND_GAPS.md`**. For a **tweak / rewire / rewrite** decision log and Kiro doc checklist, see **`docs/REFACTOR_REWIRE_PLAN.md`**.
 
 | Hook | Trigger | Action |
 |---|---|---|
@@ -57,7 +57,7 @@ Copy the `.kiro/hooks/` folder from this repo into your project. These 11 hooks 
 | `agora-summarize-before-read` | Before `readCode` | Gets AST outline, reads only relevant section |
 | `agora-summarize-before-readfile` | Before `readFile` | Same for regular file reads |
 | `agora-summarize-before-readmulti` | Before `readMultipleFiles` | Same for multi-file reads |
-| `agora-index-after-write` | After `writeFile` | Indexes updated symbols into memory DB |
+| `agora-index-after-write` | After `fsWrite` / `fsAppend` | Indexes updated symbols into memory DB |
 | `agora-index-after-strreplace` | After `strReplace` | Indexes after targeted edits |
 | `agora-index-after-editcode` | After `editCode` | Indexes after AST-based edits |
 | `agora-log-grep-results` | After `grepSearch` | Logs search query + indexes matched files |
