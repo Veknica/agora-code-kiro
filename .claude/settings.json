@@ -31,6 +31,15 @@
                         "command": ".claude/hooks/pre-read.sh"
                     }
                 ]
+            },
+            {
+                "matcher": "Agent",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": ".claude/hooks/pre-agent.sh"
+                    }
+                ]
             }
         ],
         "PostToolUse": [
